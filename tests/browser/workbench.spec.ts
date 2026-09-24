@@ -1,0 +1,22 @@
+import { test, expect } from '@playwright/test';
+test('总览、任务审批、审查和规划形成可操作闭环',async({page})=>{
+  const errors:string[]=[];page.on('pageerror',e=>errors.push(e.message));
+  await page.goto('/');await expect(page.getByRole('heading',{name:'团队总览.'})).toBeVisible();
+  await expect(page.getByText('演练工作空间 · 数据仅用于体验，不调用 Codex 或写入 GitHub')).toBeVisible();
+  await page.getByRole('button',{name:'任务看板',exact:true}).click();
+  await page.getByRole('button',{name:/#24.*为工作台添加全局搜索/}).click();
+  await page.getByRole('button',{name:'启动 / 继续'}).click();
+  await expect(page.getByRole('dialog')).toContainText('确认本机操作');
+  await page.getByRole('button',{name:'确认执行',exact:true}).click();
+  await expect(page.getByRole('heading',{name:'本机审批.'})).toBeVisible();
+  await expect(page.getByText('演练运行已完成。未调用 Codex、未修改代码、未运行真实测试。').first()).toBeVisible({timeout:10000});
+  await page.getByRole('button',{name:'协作规划',exact:true}).click();
+  await page.getByRole('button',{name:'新建规划',exact:true}).first().click();
+  await page.getByLabel('想要完成的目标').fill('验证通知中心');await page.getByLabel('可以验证的验收条件').fill('去重并持久保存');
+  await page.getByRole('button',{name:'预览运行申请'}).click();await page.getByRole('button',{name:'确认执行',exact:true}).click();
+  await page.getByRole('button',{name:'协作规划',exact:true}).click();await expect(page.getByRole('heading',{name:'验证通知中心',exact:true})).toBeVisible({timeout:10000});
+  await page.getByRole('button',{name:'确认创建任务'}).click();await page.getByRole('button',{name:'确认执行',exact:true}).click();
+  await page.getByRole('button',{name:'任务看板',exact:true}).click();await expect(page.getByRole('heading',{name:'验证通知中心：定义契约',exact:true})).toBeVisible({timeout:10000});
+  expect(errors).toEqual([]);await page.screenshot({path:'artifacts/workbench-board.png',fullPage:true});
+});
+test('移动端不横向溢出，导航和空搜索可用',async({page})=>{await page.setViewportSize({width:390,height:844});await page.goto('/');await expect(page.getByRole('heading',{name:'团队总览.'})).toBeVisible();await page.getByLabel('搜索任务').fill('不存在的标题');expect(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth)).toBeTruthy();await page.getByLabel('打开导航').click();await page.getByRole('button',{name:'工作区设置',exact:true}).click();await expect(page.getByRole('heading',{name:'工作区设置.'})).toBeVisible();await page.screenshot({path:'artifacts/workbench-mobile.png',fullPage:true});});

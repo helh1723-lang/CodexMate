@@ -1,0 +1,26 @@
+# 换行符归一化 —— Windows / macOS 双端协作的关键
+# 背景：Windows 侧 git 默认 core.autocrlf=true 会在检出时把文本改成 CRLF，
+# macOS 侧默认保持 LF。两端同时改同一个仓库时，会让 codex 产出的补丁出现
+# "整文件重写" 的假 diff，干扰 git apply 与人工评审。
+# 策略：仓库内一律 LF；只有必须 CRLF 的平台脚本例外。
+
+* text=auto eol=lf
+
+# 二进制：禁止换行转换与 diff
+*.png  binary
+*.jpg  binary
+*.jpeg binary
+*.gif  binary
+*.ico  binary
+*.pdf  binary
+*.tgz  binary
+*.woff  binary
+*.woff2 binary
+
+# 平台脚本必须保留 CRLF，否则 Windows 下可能无法直接执行
+*.bat text eol=crlf
+*.cmd text eol=crlf
+*.ps1 text eol=crlf
+
+# 生成物：减少 diff 噪音
+package-lock.json linguist-generated=true -diff

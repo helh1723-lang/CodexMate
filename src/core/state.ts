@@ -1,0 +1,3 @@
+import { assert, type TaskState } from './model.js';
+const transitions:Record<TaskState,TaskState[]>={ready:['running','blocked','cancelled','needs_approval'],needs_approval:['running','blocked','cancelled'],running:['review','blocked','handoff_pending','cancelled'],review:['running','done','blocked','handoff_pending'],handoff_pending:['ready','running','blocked','cancelled'],blocked:['ready','running','handoff_pending','cancelled'],done:[],cancelled:[]};
+export function transition(from:TaskState,to:TaskState,remoteClosed=false){assert(from===to||transitions[from].includes(to),'INVALID_TRANSITION',`不允许从 ${from} 转换为 ${to}。`);assert(to!=='done'||remoteClosed,'HUMAN_COMPLETION','任务完成必须以人类关闭 Issue 为依据。');return to;}

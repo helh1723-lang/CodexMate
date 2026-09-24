@@ -1,0 +1,16 @@
+node_modules/
+dist/
+web-dist/
+.cache/
+.local/
+.codexmate/local/
+*.db
+*.db-shm
+*.db-wal
+*.tgz
+test-results/
+playwright-report/
+# 本机 AI 工作笔记：含本机路径、账号等环境信息，不随协作仓库分发
+.workbuddy/memory/
+.env
+!*.example

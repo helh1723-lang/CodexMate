@@ -1,0 +1,16 @@
+services:
+  coordinator:
+    build:
+      context: ../..
+      dockerfile: templates/organization/Dockerfile
+    ports:
+      - "127.0.0.1:4320:4320"
+    volumes:
+      - codexmate:/data
+      - ./coordinator.json:/config/coordinator.json:ro
+    read_only: true
+    tmpfs:
+      - /tmp
+    restart: unless-stopped
+volumes:
+  codexmate:
