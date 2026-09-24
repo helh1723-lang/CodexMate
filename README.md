@@ -314,6 +314,12 @@ npm run cli -- <args>   # 直接跑 TS 版 CLI
 
 ---
 
+## 许可证
+
+MIT，见 [`LICENSE`](LICENSE)。
+
+---
+
 ## 文档
 
 | 文档 | 内容 |

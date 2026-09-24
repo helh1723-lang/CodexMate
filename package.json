@@ -2,6 +2,7 @@
   "name": "codexmate",
   "version": "1.1.0-rc.1",
   "description": "Local-first GitHub collaboration for independent Codex accounts",
+  "license": "MIT",
   "type": "module",
   "bin": { "codexmate": "dist/cli/index.js" },
   "files": ["dist", "web-dist", "templates", "docs", "README.md"],
