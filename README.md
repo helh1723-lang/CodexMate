@@ -7,6 +7,8 @@
 - **不共享**账号、凭据或额度。
 
 > 当前版本 **1.1.0-rc.1**：可运行的候选实现，**尚未通过 PRD 全部发布门槛**。请先读 [`docs/acceptance.md`](docs/acceptance.md) 了解哪些结论已经实测、哪些仍需两台机器两个人验证。
+>
+> **第一次用？直接看 [新手向导](docs/getting-started.md)** —— 8 个页面各管什么、看板的 8 种状态怎么读、面板上那些数字什么意思，都在里面。
 
 ---
 
@@ -324,6 +326,7 @@ MIT，见 [`LICENSE`](LICENSE)。
 
 | 文档 | 内容 |
 |---|---|
+| [`docs/getting-started.md`](docs/getting-started.md) | **新手向导：面板怎么用、状态怎么读、数字什么意思** |
 | [`CodexMate_Full_PRD.md`](CodexMate_Full_PRD.md) | 完整产品需求与版本计划（最高约束） |
 | [`docs/architecture.md`](docs/architecture.md) | 分层、模块职责、数据流、本地数据库 |
 | [`docs/protocol.md`](docs/protocol.md) | Issue 结构化区块、交接载荷、事件与幂等键 |
