@@ -103,6 +103,8 @@ templates/relay/  Docker + Caddy 部署模板
 
 技术架构见 [docs/architecture.md](docs/architecture.md)，部署打包见 [docs/operations.md](docs/operations.md)，进度见 [docs/progress.md](docs/progress.md)，接续开发见 [HANDOFF.md](HANDOFF.md)。
 
+当前 `2.0.0-alpha.2` 的改造在 `codex/minimal-agent-chat` 分支上，通过 draft PR 审查，完成后才合并 `main`。上一版 v1.1 工作台保留在标签 `pre-chat-redesign-20260924`。
+
 ## 许可
 
 MIT

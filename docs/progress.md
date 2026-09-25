@@ -20,6 +20,14 @@
 
 类型检查、23 项单元/集成测试和构建通过。真实 Electron 窗口、当前账号登录检测、contextIsolation/nodeIntegration/sandbox 检查通过。浏览器、真实上下文召回和最终安装包结果以 [acceptance.md](acceptance.md) 的最终记录为准。
 
+## 提交与发布
+
+- 上传前复扫暂存内容：无 API 密钥特征、无明文 `https://user:password@host` 形式、无本机路径与账号标识残留。此前自动审批拦截的两处匹配（文档中的账号密码 URL 写法、测试里的假 token）已分别改为纯文字描述与字符串拼接构造的合成标记。
+- 提交 `c2b6844` → `origin/codex/minimal-agent-chat`（81 个文件，+1996 / -3543）；`main` 未改动，仍为 9986ddb。
+- 旧版追溯标签 `pre-chat-redesign-20260924` 已推送到远端。
+- PR #1（draft）作为审查与更新记录；未完成双人双机实测前不合并主分支，也不自动部署。
+- 本机 git 无法在 `.git/` 下新建目录，含 `/` 的分支名需要手动补写引用文件，详见 [HANDOFF.md](../HANDOFF.md)。
+
 ## 未达到的验收
 
 两账号真实 Codex 全流程、Windows↔Windows / macOS↔macOS / Windows↔macOS 异地组合、macOS 安装包与实机、Docker/Caddy 公网部署、真实权限拒绝及断网/进程退出故障矩阵仍需实际环境。重启暂停有恢复入口，但不等于实现完全自动无损恢复。

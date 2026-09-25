@@ -18,6 +18,25 @@
 
 `npm run check` 当前通过 23 项测试。真实 Electron 能打开窗口并识别本机 ChatGPT 登录。完整证据、剩余限制以 [docs/acceptance.md](docs/acceptance.md) 为准，不以版本号判断完成。
 
+## 已推送状态
+
+- 提交 `c2b6844`，81 个文件（+1996 / -3543），分支 `codex/minimal-agent-chat`，已推送到 `origin`。
+- `main` 未改动，仍为 9986ddb；旧版状态由标签 `pre-chat-redesign-20260924`（9986ddb）追溯，标签已推送。
+- PR #1（draft）：<https://github.com/helh1723-lang/CodexMate/pull/1>。保持 draft，双人双机实测完成前不合并主分支。
+- 上传前已扫过凭据特征、明文 URL 账号密码、本机路径与账号标识；未发现残留。`.workbuddy/memory/`、`artifacts/desktop/`、`dist/`、`web-dist/`、`.local/` 均不入库。
+
+### 本机 git 目录坑（会重复出现）
+
+本机 git 无法在 `.git/` 下新建目录：`codex/minimal-agent-chat` 这类含 `/` 的分支名，`git commit` 会写出对象和 reflog，但**引用文件写不进去**，于是 `git log` 报 "does not have any commits yet"。`fetch` / `push` 的远端跟踪引用同样不会落地。修法是手动补目录再写文件：
+
+```sh
+mkdir -p .git/refs/heads/codex .git/refs/remotes/origin/codex
+printf '%s\n' '<sha>' > .git/refs/heads/codex/minimal-agent-chat
+printf '%s\n' '<sha>' > .git/refs/remotes/origin/codex/minimal-agent-chat
+```
+
+`git pack-refs` 会把 `refs/remotes/origin/*` 收走，之后这些文件会消失，属正常。
+
 ## 仍需做的事
 
 - 找第二个账号和实际设备，通过真实 HTTPS 中转完成一次从目标到双方实际修改、互动消息、精确 SHA 整合和审查的完整任务。
