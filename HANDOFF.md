@@ -52,5 +52,6 @@ printf '%s\n' '<sha>' > .git/refs/remotes/origin/codex/minimal-agent-chat
 - 修改上下文预算时同步更新 `context.ts` 注释、协议和回归测试。
 - Codex 固定 0.156.1；动态工具属于实验协议。升级前重新核对官方类型并跑实际 smoke。
 - 模型本机凭据和线程留在各自设备；中转可见消息正文，不能宣传端到端加密。
+- 验证桌面程序前先清掉 `ELECTRON_RUN_AS_NODE`。某些代理式终端会注入该变量，Electron 会退化成纯 Node 运行，现象是应用秒退、退出码 0、连 userData 都不建，日志为 `SyntaxError: The requested module 'electron' does not provide an export named 'BrowserWindow'`。这是环境问题，不是产品缺陷；`scripts/smoke-desktop.mjs` 已自行清理该变量。
 - 本次更新在 `codex/minimal-agent-chat` 分支统一管理，版本 `2.0.0-alpha.2`；包含上一位 Agent 删除旧版的工作，不要盲目 restore/reset。主分支合并需结合 PR 和未完成验收决定。
 - 额度重置、代理端口属于会变化的本机状态。不要把旧交接中的时间/端口当成当前事实，也不要运行仓库内不存在的修复脚本。
