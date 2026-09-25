@@ -1,0 +1,6 @@
+import {_electron} from 'playwright';
+import {resolve} from 'node:path';
+import {mkdir,writeFile} from 'node:fs/promises';
+const env={...process.env,CODEXMATE_HOME:resolve('.local',`desktop-smoke-${Date.now()}`)};delete env.ELECTRON_RUN_AS_NODE;
+const app=await _electron.launch({...(process.argv[2]?{executablePath:resolve(process.argv[2]),args:[]}:{args:['.']}),env,timeout:30000});
+try{const page=await app.firstWindow();await page.getByRole('heading',{name:'两位 Codex，一个目标。'}).waitFor();await page.screenshot({path:'artifacts/desktop-light.png'});const result=await page.evaluate(async()=>{const {token}=await(await fetch('/api/session')).json();return (await(await fetch('/api/action',{method:'POST',headers:{'Content-Type':'application/json','X-CodexMate-Token':token},body:JSON.stringify({action:'account'})})).json());});const security=await app.evaluate(({BrowserWindow})=>{const prefs=BrowserWindow.getAllWindows()[0].webContents.getLastWebPreferences();return {contextIsolation:prefs.contextIsolation,nodeIntegration:prefs.nodeIntegration,sandbox:prefs.sandbox};});console.log(JSON.stringify({window:true,account:result,security},null,2));await writeFile('artifacts/desktop-smoke.json',JSON.stringify({window:true,account:result,security},null,2));if(result.error)process.exitCode=1;}finally{await app.close();}

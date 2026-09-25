@@ -1,0 +1,31 @@
+name: Desktop builds
+on:
+  workflow_dispatch:
+  push:
+    tags: ['chat-v*']
+jobs:
+  build:
+    strategy:
+      matrix:
+        os: [windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run check
+      - run: npm run dist:win
+        if: runner.os == 'Windows'
+      - run: npm run dist:mac
+        if: runner.os == 'macOS'
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: false
+      - uses: actions/upload-artifact@v4
+        with:
+          name: CodexMate-${{ runner.os }}
+          path: |
+            artifacts/desktop/*.exe
+            artifacts/desktop/*.dmg

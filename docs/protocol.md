@@ -1,246 +1,172 @@
-# 协议
+# 协作协议
 
-本文描述 CodexMate 写在 GitHub 上的全部结构化数据，以及两端之间的约定。**这些协议属于 CodexMate 自己的设计**，不是已存在的平台接口。
+## 角色
 
-设计原则：
+三个参与方，职责严格分离：
 
-- GitHub 是**低频异步事件总线与投影层**，不是聊天服务器；逐 token 日志永远只留本机。
-- 所有结构化数据都嵌在人类可读正文之外的独立区块里，人类描述保持可读、可编辑。
-- 任何来自远端的内容都是**数据**，不具备授权能力。
-- 写入前一律脱敏扫描；命中疑似凭据即拒绝发布。
-
----
-
-## 1. Issue 结构化区块（`codexmate.task/v1`）
-
-人类描述写在上方，机器可读数据放在固定标记之间：
-
-```markdown
-<人类可读的任务描述，可自由编辑>
-
-<!-- codexmate:task -->
-```yaml
-schema: codexmate.task/v1
-issue: 42
-revision: 3
-state: ready
-owner: user-b
-reviewers: [user-a]
-priority: medium
-acceptance:
-  - 登录成功返回约定会话信息
-  - 非法凭据返回统一错误
-needs: [39]
-base_branch: main
-paths: [src/auth, tests/auth]
-risk: normal
-```
-<!-- /codexmate:task -->
-```
-
-字段约束（由 `taskSchema` 校验）：
-
-| 字段 | 约束 |
-|---|---|
-| `schema` | 固定 `codexmate.task/v1` |
-| `issue` | 正整数；**必须**等于 Issue 编号，否则解码直接报错 |
-| `revision` | 正整数；每次受管变更 +1，是审批失效与幂等的基准 |
-| `state` | `ready` / `needs_approval` / `running` / `review` / `blocked` / `handoff_pending` / `done` / `cancelled` |
-| `owner` | 单个 login；空串表示未分配 |
-| `acceptance` | 至少 1 条，每项 ≤ 3000 字符 |
-| `needs` | 前置 Issue 编号数组 |
-| `paths` | 声明变更范围；写入时用作白名单 |
-| `risk` | `normal` / `high`；`high` 不参与自动执行 |
-| `base_branch` | 默认 `main` |
-
-编码时人类正文被保留（`encodeTask` 只替换标记区块），解码时 `body` 字段取回人类部分。
-
-### 1.1 一致性校验（重要）
-
-`decodeTask` 会把结构化记录与 GitHub 原生字段对照：
-
-- `owner` 必须与 assignees **完全一致**（有 owner 时恰好 1 个 assignee；无 owner 时 0 个）。
-- `state` 必须与唯一一个 `cm:*` 标签一致。
-
-不一致时不报错，而是给任务打上 `warning`；**带 warning 的任务一律禁止启动执行**，需要在 UI 或 CLI 中先修复。这避免了「标签与正文谁说了算」的歧义。
-
-### 1.2 标签只是投影
-
-`cm:ready` `cm:running` `cm:review` `cm:blocked` `cm:handoff` `cm:needs_approval` `cm:done` `cm:cancelled` 仅用于 GitHub 侧筛选。**状态以结构化区块为准**；发现不一致时停止自动执行。
-
----
-
-## 2. 交接载荷（`codexmate.handoff/v1`）
-
-交接时在 Issue 评论里追加一条机器可读载荷：
-
-```markdown
-交接给 @user-a，检查点 3f2c…（40 位 SHA）。
-<!-- codexmate-handoff-json:<base64(JSON)> -->
-```
-
-解码后的 JSON：
-
-```json
-{
-  "schema": "codexmate.handoff/v1",
-  "id": "uuid",
-  "repoId": "…",
-  "issue": 42,
-  "revision": 3,
-  "from": "user-b",
-  "to": "user-a",
-  "sha": "<40 位 commit SHA>",
-  "branch": "cm/42/user-b-r3",
-  "goal": "任务标题",
-  "acceptance": ["…逐项验收条件…"],
-  "remaining": ["剩余待办"],
-  "risks": ["已知风险"],
-  "checks": [{ "name": "npm test", "exitCode": 0, "output": "…截断 500 字符…" }],
-  "needs": [39],
-  "status": "pending",
-  "createdAt": "2026-09-24T01:00:00.000Z"
-}
-```
-
-### 接手前的全部校验（缺一不可）
-
-接收方在同步时逐条核对，任一条不满足就**丢弃该载荷**（不报错、不入账、不可执行）：
-
-| 校验 | 目的 |
-|---|---|
-| `schema === 'codexmate.handoff/v1'` | 版本匹配 |
-| `repoId` 等于当前仓库 | 防跨仓重放 |
-| `issue` 且 `revision` 等于当前任务 | 防接受旧交接 |
-| `from` 等于任务当前 `owner` | 交接只能来自现任负责人 |
-| 评论作者 `user.login === from` | 防第三方伪造交接 |
-| `/^[a-f0-9]{40}$/` 匹配 `sha` | SHA 格式合法 |
-| 该 `id` 未被记录过 | 幂等 |
-
-接受时还会：重新拉取任务确认仍为 `handoff_pending` 且 owner / revision 未变 → `git fetch` 该分支并校验 `FETCH_HEAD === sha` → owner 改为接手者且 `revision+1` → **从精确 SHA 新开本机线程**。
-
-原负责人侧：可写 Run 置 `frozen` 并保留只读历史，不会自动恢复。
-
----
-
-## 3. 评论幂等 marker
-
-所有自动评论都带一个 HTML 注释 marker；发表前先分页查找，命中即复用，不重复发表：
-
-| 场景 | marker |
-|---|---|
-| 草稿 PR 通知 | `<!-- codexmate:publish:<issue>:<revision>:<sha> -->` |
-| 交接 | `<!-- codexmate:handoff:<handoffId> -->`（载荷另有 base64 marker） |
-| 审查发布 | `<!-- codexmate:review:<reviewId> -->` |
-| PR 正文 | `<!-- codexmate:pr:<issue>:<revision> -->` |
-| 规划生成的 Issue | `<!-- codexmate:plan:<planId>:<index> -->`（发布前先按 marker 查重） |
-
-评审评论发布时会先列出该 PR 的全部 reviews，已含 marker 则跳过；`event` 固定为 `COMMENT`——**永不提交 `APPROVE`**，也不触发合并。
-
----
-
-## 4. 事件与幂等键
-
-`store.once(id)` 基于 `events` 表的 `INSERT OR IGNORE`：`changes > 0` 表示首次处理。
-
-| 对象 | 幂等键 |
-|---|---|
-| 受管 Run | `repo + issue + revision + owner + device_id` |
-| 草稿 PR | 查询 `state=open & head=<owner>:<branch> & base=<base>`，命中即复用（重启/崩溃后不会重复建 PR） |
-| 审查结果 | `repo + pr + head_sha + reviewer + review_round` |
-| 检查点 | `run_id + commit_sha` |
-| 交接 | `repo + issue + revision + from + to + checkpoint_sha` |
-| 通知 | `<repoId>:<事件键>`（如 `ready:<issue>:<revision>`），`put` 覆盖即去重 |
-
-**刻意不做的**：不把 assignee 或评论当作原子锁。GitHub 的 Issue 写入不是事务，因此默认模式靠「明确 assignee + 只执行本人任务」避免双写，而不是声称拥有事务级 exactly-once。
-
----
-
-## 5. 仓库公共配置（`codexmate.config/v1`）
-
-```yaml
-schema: codexmate.config/v1
-repo:
-  default_branch: main
-members:
-  - login: user-a
-    role: owner        # owner | developer | reviewer | viewer
-    paths: [src, docs] # 用于分配建议与冲突预警，不构成权限
-workers:               # 活跃设备；来自 `codexmate doctor` 输出的 device ID
-  user-a: <device-id>
-execution:
-  default_mode: approve-first
-```
-
-读取路径：`GET /repos/:owner/:repo/contents/.codexmate/config.yml?ref=<default_branch>`（base64 解码后按 YAML 解析，禁用别名展开）。
-
-使用规则：
-
-- **版本不兼容**（`schema` 不认识）→ 本机进入**只读降级**：可查看、不可写，并提示升级客户端。
-- **每次写操作前复核**：远端角色必须与本机记录一致，否则 `ROLE_CHANGED`；写操作还要求本机 device 等于 `workers[<login>]`，否则 `INACTIVE_DEVICE`。
-- 本机私有配置（自动执行、自动推送、可信检查、超时、日志保留）**不写入仓库**。
-
-配置优先级（低优先级不能覆盖高优先级）：
-
-```
-不可突破的安全限制 > 本机审批/组织策略 > 仓库默认分支公共配置 > Issue 任务建议 > PR/评论文本
-```
-
----
-
-## 6. MCP 工具
-
-stdio，仅绑定本机当前用户；不提供任何公网端口。
-
-| 工具 | 作用 | 权限 |
+| 角色 | 位置 | 职责 |
 |---|---|---|
-| `cm_status` | 读取已绑定仓库与本机状态 | 只读 |
-| `cm_list_tasks` | 读取已同步任务 | 只读 |
-| `cm_task_context` | 读取任务、验收、依赖与本机运行 | 只读 |
-| `cm_request_run` | 为一个已授权 Issue **提出**执行请求 | 仅创建审批 |
-| `cm_request_review` | **提出** PR 只读审查请求 | 仅创建审批 |
-| `cm_create_handoff` | **提出**交接请求 | 仅创建审批 |
-| `cm_accept_handoff` | **提出**接受交接请求 | 仅创建审批 |
+| **本机服务** | 各自机器 | 管理本地状态机、驱动本机 Codex、跑检查、提交 `cm/` 分支 |
+| **中转服务** | 自部署 | 搬运已校验消息、去重、重放、在线状态。**不理解消息语义，不接触线程与凭据** |
+| **本机 Codex** | 各自机器 | 各自的使用者与额度，只在自己的协作工作树里工作 |
 
-**MCP 没有批准工具。** 上述四个写请求都必须由用户在本机 CLI 或面板确认后才会执行；模型无法通过 MCP 绕过用户设置。工具返回结构化结果与 GitHub 链接；被阻止时返回明确原因。
+## 中转服务
 
----
+### HTTP
 
-## 7. 声明式适配器（`codexmate.adapter/v1`）
-
-```json
-{
-  "schema": "codexmate.adapter/v1",
-  "id": "ci-status",
-  "name": "CI 状态读取",
-  "kind": "ci",
-  "url": "https://ci.example.com/api/status",
-  "method": "GET",
-  "description": "读取构建状态，只读。"
-}
-```
+| 方法 | 路径 | 说明 |
+|---|---|---|
+| `GET` | `/health` | 返回 `{ok, protocol}`，`protocol` 当前为 `1` |
+| `POST` | `/rooms` | 创建房间，返回 `{id, member, token, invite}` |
+| `POST` | `/join` | 用邀请码加入，返回 `{id, member, token}` |
 
 约束：
 
-- `kind: ci` 只允许 `GET`；`kind: notification` 只允许 `POST`。
-- URL 必须 `https:`，且**不能**带用户名/密码/查询串。
-- 注册不授予调用权；`grant` 记录配置哈希，配置改动自动失效。
-- 通知载荷只允许：`https://github.com/...` 链接 + ≤100 字符状态摘要，且摘要同样过密钥扫描。
-- 适配器**不能**加载 JavaScript 或启动进程。
+- 邀请码以 **SHA-256 摘要**存放，服务端不保存原始邀请码。
+- 成员令牌同样只存摘要，比对使用 `timingSafeEqual`。
+- 房间最多两名成员；邀请码单人使用后立即失效。
+- 房间未配对时 24 小时过期；配对后不过期。
+- 请求体上限 8 KB，按来源 IP 每分钟 60 次。
 
----
+### WebSocket
 
-## 8. 发布清单（`codexmate.release/v1`）
+连接后 5 秒内必须认证，否则断开。
 
-```json
-{
-  "schema": "codexmate.release/v1",
-  "version": "1.1.0",
-  "file": "codexmate-1.1.0.tgz",
-  "sha256": "<64 位十六进制>",
-  "size": 152500,
-  "signature": "<base64(Ed25519 对 {schema,version,file,sha256,size} 的签名)>"
-}
+客户端 → 服务端：
+
+| type | 载荷 | 说明 |
+|---|---|---|
+| `auth` | `{room, member, token}` | 认证（超时即断开） |
+| `event` | `{event}` | 发送一条线路事件，须符合线路 schema |
+| `ack` | `{id}` | 确认已收到某条事件 |
+
+服务端 → 客户端：
+
+| type | 载荷 | 说明 |
+|---|---|---|
+| `ready` | — | 认证通过 |
+| `batch` | `{cancelled, events}` | 投递待办事件；**取消标记永远排在前面** |
+| `accepted` | `{id}` | 事件已被接受持久化 |
+| `presence` | `{members}` | 成员上下线 |
+| `error` | `{id?, message}` | 拒绝或错误 |
+
+要点：
+
+- **重放优先于冲刷。** 客户端收到 `ready` 后先等 `batch`，再补发离线期间积压的事件。
+- **去重。** 事件按 id 幂等；重复且内容一致则直接回 `accepted`，内容冲突则报错。
+- **双向投递。** 服务器把同伴事件补发给接收端，本机发送事件保留在自己的记录中；并非把自己发出的事件再次回传。
+- WS 单帧上限 128 KB，这也是上下文预算的上界来源。
+
+### 中转的状态机约束
+
+服务端强制这些规则（不是客户端自觉）：
+
+- 一个房间同时只能有一个活动任务。
+- 非 `start` 类型的事件必须属于已知且未关闭的任务。
+- 只有发起方可以发 `complete`。
+- 已取消的任务只接受 `cancel`。
+- 线路事件的 `sender` 必须是认证成员自己。
+
+## 线路事件
+
+```ts
+type Wire = {
+  id: string;          // UUID
+  room: string;        // UUID
+  task: string;        // UUID
+  sender: string;      // UUID，自己的成员 ID
+  type: WireType;
+  payload: Record<string, unknown>;
+  correlation?: string;
+  at: number;
+};
+
+type WireType =
+  | 'start'        // 发起：目标、基准提交、远端身份
+  | 'message'      // 同伴消息（可携带上下文增量）
+  | 'context'      // 显式上下文同步
+  | 'supplement'   // 使用者补充要求
+  | 'result'       // 提交结果：SHA、分支、检查输出
+  | 'review'       // 请求集成审查
+  | 'reviewed'     // 审查结论
+  | 'complete'     // 全部完成
+  | 'cancel';      // 停止
 ```
 
-校验顺序：**体积 → SHA-256 → 签名**，任一不符即拒绝；校验未通过的包**不落盘**。详见 `docs/operations.md`。
+## 任务阶段
+
+```
+working ──双方均提交──▶ integrating ──▶ reviewing ──通过──▶ complete
+   ▲                                        │
+   └──────────── 修正（最多两轮）──────────────┘
+```
+
+异常时进入 `paused`（带原因），可对账后继续；`cancelled` 是终态，不能恢复，需新建任务。
+
+用户补充要求的事件 ID 构成 requirements 集合。集成审查及 complete 必须对应同一集合；新增补充会使旧审查失效，中转也拒绝用过期集合结束任务。
+
+## 上下文同步
+
+### 数据结构
+
+```ts
+type ContextEntry = { kind: 'user'|'agent'|'command'|'file'|'system'; text: string; ok?: boolean };
+
+type ContextBundle = {
+  id: string; task: string; sender: string;
+  phase: string; branch: string;
+  note?: string;
+  entries: ContextEntry[];
+  cursor?: string;      // 上次同步位置
+  truncated?: boolean;
+  at: number;
+};
+```
+
+接收端用 zod 严格校验后才落库，任何不符合 schema 的一律拒绝。
+
+### 导出与裁剪
+
+1. 从 `thread/items/list` 显式读取最近 100 条（desc 后恢复时间顺序），避免一直读取默认第一页；取不到时降级为本机已记录消息。
+2. 按 `cursor` 只取新增部分。
+3. 归一化五类条目，跳过已经包含同伴上下文的宿主提示词，避免回传放大；**推理链（`reasoning`）与内部类型一律不外发**。
+4. 脱敏后，若仍疑似凭据则该条目丢弃。
+5. 合并重复文件状态、去重相同文本、按 UTF-8 字节预算裁剪，**保留最新**。
+
+### 预算
+
+| 阶段 | 上限 |
+|---|---|
+| 自动同步（附在 `peer_send` 上） | 12,000 字节 |
+| 手动同步 | 48,000 字节 |
+| 注入单次提示词（所有待处理 bundle 合计） | 6,000 UTF-8 字节 |
+| 中转 WS 单帧 | 128 KB（上述预算的设计依据） |
+
+### 触发时机
+
+| 触发 | 说明 |
+|---|---|
+| `peer_send` | 自动附带增量；冷却期 15 秒、每任务最多 40 次 |
+| 用户点「同步上下文」 | payload 为 `{context: bundle}`，只落库，随下一次显式请求注入，不额外唤醒 |
+| 无新增内容 | **不发**。宁可不同步，也不重复灌同一批历史 |
+
+## 本机 Codex 接口
+
+CodexMate 通过 stdio JSON-RPC 驱动本机 Codex（`app-server --listen stdio://`）。
+
+用到的请求：`initialize`、`account/read`、`account/login/start`、`thread/start`、`thread/resume`、`thread/items/list`、`turn/start`、`turn/steer`、`turn/interrupt`。
+
+处理的请求：`item/tool/call`、各类 requestApproval、`item/tool/requestUserInput`。
+
+处理的通知：`item/agentMessage/delta`、`item/completed`、`turn/completed`、`account/login/completed`。
+
+启动时明确禁用：外部 MCP 连接、apps、浏览器/电脑操作、多 Agent、Web 搜索，并把网络访问关掉。
+
+暴露给 Codex 的协作工具只有四个：`peer_send`、`peer_read`、`submit_result`、`submit_review`。**没有任何 git push / commit / 部署工具。**
+
+## Git 约定
+
+- 基准提交必须已存在于远端（`branch -r --contains` 校验）。
+- 每个成员的分支：`cm/<任务ID>/<成员前8位>-<work|integration|review-*>`。
+- 推送只对 `cm/` 前缀分支；主分支永不由程序改动。
+- 集成后校验双方提交 SHA 都是结果的祖先——**合并看起来干净不代表内容都在**。
