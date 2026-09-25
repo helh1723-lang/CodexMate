@@ -9,7 +9,10 @@ export type Room = {url:string;id:string;member:string;token:string;invite?:stri
 export type Project = {path:string;remote:string;name:string;checks:string[][];grant?:{room:string;peer:string}};
 export type Check = {command:string[];code:number;output:string};
 export type Result = {sha:string;branch:string;summary:string;checks:Check[];requirements?:string[]};
-export type Task = {id:string;title:string;goal:string;initiator:string;base:string;phase:'working'|'integrating'|'reviewing'|'paused'|'cancelled'|'complete';resumePhase?:'working'|'integrating'|'reviewing';path:string;branch:string;thread?:string;turn?:string;wakes:number;budget:number;repairs:number;results:Record<string,Result>;integration?:Result;reviewedSha?:string;pendingSubmit?:string;pendingReview?:{approved:boolean;summary:string};requirements?:string[];error?:string;created:number};
+export type PendingSubmit = {summary:string;requestId:string;turnId:string;requirements:string[];status:'awaiting-turn'|'ready'|'running'};
+export type PendingReview = {approved:boolean;summary:string;requestId:string;turnId:string;sha:string;requirements:string[];status:'awaiting-turn'|'ready'|'running'};
+export type UncertainAction = {kind:'submit'|'review';turnId?:string;summary?:string;reason:string};
+export type Task = {id:string;title:string;goal:string;initiator:string;base:string;phase:'working'|'integrating'|'reviewing'|'paused'|'cancelled'|'complete';resumePhase?:'working'|'integrating'|'reviewing';resumeAction?:'repair-integration';admission?:'pending'|'accepted'|'rejected'|'unknown';admissionEventId?:string;admissionError?:string;path:string;branch:string;thread?:string;turn?:string;wakes:number;budget:number;repairs:number;results:Record<string,Result>;integration?:Result;reviewedSha?:string;pendingSubmit?:PendingSubmit;pendingReview?:PendingReview;uncertainAction?:UncertainAction;requirements?:string[];error?:string;created:number};
 export type ChatMessage = {id:string;task:string;role:'user'|'assistant'|'system'|'collaboration'|'terminal'|'context';text:string;at:number;direction?:string};
 export type Permission = {id:string;task:string;method:string;params:any};
 export const textInput=(text:string)=>[{type:'text',text,text_elements:[]}];

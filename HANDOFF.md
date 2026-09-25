@@ -25,17 +25,20 @@
 - PR #1（draft）：<https://github.com/helh1723-lang/CodexMate/pull/1>。保持 draft，双人双机实测完成前不合并主分支。
 - 上传前已扫过凭据特征、明文 URL 账号密码、本机路径与账号标识；未发现残留。`.workbuddy/memory/`、`artifacts/desktop/`、`dist/`、`web-dist/`、`.local/` 均不入库。
 
-### 本机 git 目录坑（会重复出现）
+### Git 引用或目录操作失败
 
-本机 git 无法在 `.git/` 下新建目录：`codex/minimal-agent-chat` 这类含 `/` 的分支名，`git commit` 会写出对象和 reflog，但**引用文件写不进去**，于是 `git log` 报 "does not have any commits yet"。`fetch` / `push` 的远端跟踪引用同样不会落地。修法是手动补目录再写文件：
+不要直接编辑 `.git/refs/*`，也不要把一次权限或文件锁错误当作 Git 的通用限制。先用只读诊断确认当前仓库路径、引用与锁状态：
 
 ```sh
-mkdir -p .git/refs/heads/codex .git/refs/remotes/origin/codex
-printf '%s\n' '<sha>' > .git/refs/heads/codex/minimal-agent-chat
-printf '%s\n' '<sha>' > .git/refs/remotes/origin/codex/minimal-agent-chat
+git rev-parse --show-toplevel
+git rev-parse --git-dir
+git status --short --branch
+git show-ref --heads
+git reflog --all --date=iso
+git fsck --no-reflogs --unreachable
 ```
 
-`git pack-refs` 会把 `refs/remotes/origin/*` 收走，之后这些文件会消失，属正常。
+确认具体原因后再通过 Git 的引用更新命令修复；保留原引用和日志，不能用手工覆盖 refs 绕过锁或权限问题。宿主 Git 的 hook guard 位于任务工作树之外；若 guard 路径无效或不为空，应修复宿主数据目录本身，不能把它改回工作树内路径。
 
 ## 仍需做的事
 

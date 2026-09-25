@@ -1,6 +1,6 @@
 import { mkdir } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
-import { git, GitWorktree } from '../adapters/git.js';
+import { git, GitWorktree, hostGitEnvironment } from '../adapters/git.js';
 import { exec } from '../adapters/process.js';
 import { redact } from '../core/security.js';
 import type { Check, Project, Result, Task } from './model.js';
@@ -19,7 +19,7 @@ export class Repository {
     try{await git(path,['rev-parse','--git-dir']);if(await git(path,['branch','--show-current'])!==branch)throw new Error('已有工作树分支不符');return {path,branch};}catch(e){if(String(e).includes('分支不符'))throw e;}
     await git(this.project.path,['worktree','add','-b',branch,path,base]);return {path,branch};
   }
-  async checks(path:string,signal?:AbortSignal):Promise<Check[]>{const results:Check[]=[];for(const command of this.project.checks){if(!command.length)continue;const r=await exec(command[0],command.slice(1),{cwd:path,signal,timeout:600000});results.push({command,code:r.code,output:redact(r.stdout+'\n'+r.stderr).slice(-20000)});if(r.code!==0)break;}return results;}
+  async checks(path:string,signal?:AbortSignal):Promise<Check[]>{const results:Check[]=[],env=await hostGitEnvironment(path);for(const command of this.project.checks){if(!command.length)continue;const r=await exec(command[0],command.slice(1),{cwd:path,signal,timeout:600000,env});results.push({command,code:r.code,output:redact(r.stdout+'\n'+r.stderr).slice(-20000)});if(r.code!==0)break;}return results;}
   async verifyReview(path:string,sha:string){
     if(await git(path,['rev-parse','HEAD'])!==sha||await git(path,['status','--porcelain']))throw new Error('审查工作树已偏离指定提交。请还原额外修改后继续，不能把修改后的检查归到原 SHA。');
   }
@@ -28,6 +28,21 @@ export class Repository {
     const checks=await this.checks(task.path,signal);if(checks.some(c=>c.code!==0))throw new Error('约定检查失败：\n'+checks.map(c=>c.command.join(' ')+'\n'+c.output).join('\n'));
     if(signal?.aborted)throw new Error('任务已停止');const sha=await tree.checkpoint(task.path,task.base,'CodexMate: '+task.title.slice(0,100));
     if(signal?.aborted)throw new Error('任务已停止');await tree.push(task.path,task.branch,task.base);return {sha,branch:task.branch,checks,summary};
+  }
+  async reconcileCommitted(task:Task,summary:string):Promise<Result|undefined>{
+    await this.verify();const tree=new GitWorktree(this.project.path,join(this.home,'worktrees'));await tree.health(task.path,task.branch);
+    const remoteRef=`refs/heads/${task.branch}`;
+    const remoteSha=(value:string)=>/^([0-9a-f]{40,64})\s/m.exec(value)?.[1];
+    const local=await git(task.path,['rev-parse','HEAD']),remote=remoteSha(await git(task.path,['ls-remote','--heads','origin',remoteRef]));
+    if(!remote||remote!==local||local===task.base)return undefined;
+    await git(task.path,['merge-base','--is-ancestor',task.base,local]);
+    if(await git(task.path,['status','--porcelain']))return undefined;
+    await tree.scan(task.path,task.base);const checks=await this.checks(task.path);
+    if(checks.some(c=>c.code!==0))return undefined;
+    const current=await git(task.path,['rev-parse','HEAD']),remoteNow=remoteSha(await git(task.path,['ls-remote','--heads','origin',remoteRef]));
+    if(current!==local||remoteNow!==local||await git(task.path,['status','--porcelain']))return undefined;
+    await tree.scan(task.path,task.base);
+    return {sha:local,branch:task.branch,checks,summary};
   }
   async fetchResult(task:Task,result:Result){
     if(!shaPattern.test(result.sha)||!result.branch.startsWith(`cm/${task.id}/`)||!/^cm\/[a-zA-Z0-9/_-]+$/.test(result.branch))throw new Error('同伴结果不是合法协作分支');

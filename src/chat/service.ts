@@ -8,7 +8,7 @@ import { AppServer } from './app-server.js';
 import { ChatStore } from './store.js';
 import { Repository, repositoryIdentity } from './repository.js';
 import { RelayClient, relayUrl } from './relay-client.js';
-import { textInput, type Task, type Room, type Project, type Wire, type Permission, type Result, type ChatMessage } from './model.js';
+import { textInput, type Task, type Room, type Project, type Wire, type Permission, type Result, type ChatMessage, type PendingSubmit, type PendingReview, type UncertainAction } from './model.js';
 import { buildBundle, threadRows, rowsAfter, rowKey, itemsToEntries, parseBundle, formatPeerContext, formatContexts, contextSummary, SYNC_BUDGET_AUTO, SYNC_BUDGET_MANUAL, SYNC_COOLDOWN_MS, MAX_SYNCS_PER_TASK, type ContextBundle } from './context.js';
 
 const resultSchema=z.object({sha:z.string().regex(/^[0-9a-f]{40,64}$/),branch:z.string(),summary:z.string().max(20000),requirements:z.array(z.string().uuid()).optional(),checks:z.array(z.object({command:z.array(z.string()),code:z.number(),output:z.string().max(22000)}))});
@@ -32,9 +32,26 @@ export class ChatService extends EventEmitter {
   constructor(public db:ChatStore,server?:AppServer){super();this.server=server??new AppServer();
     this.server.on('notification',m=>void this.notification(m).catch(e=>this.problem(e)));
     this.server.on('request',m=>void this.request(m).catch(e=>{try{this.server.reject(m.id,redact(String(e)));}catch{}this.problem(e);}));
-    this.server.on('disconnected',why=>{if(this.closed)return;for(const t of db.list<Task>('task'))if(t.turn){t.turn=undefined;this.pause(t,'本机 Codex 连接中断：'+why);}this.permissions.clear();this.changed();});
-    for(const t of db.list<Task>('task'))if(!['complete','cancelled','paused'].includes(t.phase)){t.turn=undefined;t.resumePhase=t.phase as Task['resumePhase'];t.phase='paused';t.error='进程已重启。请检查工作树与会话后点击继续，避免重复执行未确认动作。';db.save(t);}
-    const room=db.get<Room>('settings','room');if(room)this.connect(room);
+    this.server.on('disconnected',why=>{if(this.closed)return;for(let t of db.list<Task>('task'))if(t.turn||t.pendingSubmit?.status==='running'||t.pendingReview?.status==='running'){this.aborts.get(t.id)?.abort();t=this.invalidateTurnActions(t,t.turn==='starting'?undefined:t.turn,'本机 Codex 连接中断：'+why);t.turn=undefined;this.db.save(t);this.pause(t,'本机 Codex 连接中断：'+why);}this.permissions.clear();this.changed();});
+    const room=db.get<Room>('settings','room');
+    for(let t of db.list<Task>('task')){
+      const legacy=t as Task & {pendingSubmit?:string|PendingSubmit;pendingReview?:PendingReview|Partial<PendingReview>};
+      if(typeof legacy.pendingSubmit==='string'){t.uncertainAction={kind:'submit',summary:legacy.pendingSubmit,reason:'旧版本提交请求没有所属 turn 记录'};t.pendingSubmit=undefined;}
+      if(legacy.pendingSubmit&&typeof legacy.pendingSubmit!=='string'&&!legacy.pendingSubmit.requestId){t.uncertainAction={kind:'submit',summary:legacy.pendingSubmit.summary,reason:'旧版本提交请求没有可对账 ID'};t.pendingSubmit=undefined;}
+      if(legacy.pendingReview&&(!legacy.pendingReview.turnId||!legacy.pendingReview.requestId)){t.uncertainAction={kind:'review',summary:legacy.pendingReview.summary,reason:'旧版本审查请求没有可对账 ID'};t.pendingReview=undefined;}
+      const startEvent=db.list<Wire>('sent').find(e=>e.task===t.id&&e.type==='start')??db.list<Wire>('outbox').find(e=>e.task===t.id&&e.type==='start');
+      if(!t.admissionEventId&&startEvent)t.admissionEventId=startEvent.id;
+      if(t.admissionEventId&&db.get('relay-accepted',t.admissionEventId))t.admission='accepted';
+      else if(t.admissionEventId&&db.get<any>('rejected',t.admissionEventId)){t.admission='rejected';t.admissionError=String(db.get<any>('rejected',t.admissionEventId)?.error??'中转拒绝任务');t.phase='cancelled';}
+      if(!t.admission){const incoming=room&&t.initiator!==room.member;t.admission=incoming?'accepted':'unknown';}
+      if(t.admission==='pending')t.admission='unknown';
+      t=this.invalidateTurnActions(t,undefined,'进程重启时未确认本轮成功完成');
+      if(t.turn){t=this.invalidateTurnActions(t,t.turn,'进程重启或本机 Codex 断连后，本轮没有成功完成确认');t.turn=undefined;}
+      if(!['complete','cancelled','paused'].includes(t.phase)){t.resumePhase=t.phase as Task['resumePhase'];t.phase='paused';t.error='进程已重启。请检查工作树与会话后点击继续，避免重复执行未确认动作。';}
+      if(t.admission==='unknown'&&t.phase!=='cancelled'&&t.phase!=='complete'&&!t.admissionError)t.admissionError='旧版本任务没有可核验的中转接纳记录';
+      db.save(t);
+    }
+    if(room)this.connect(room);
   }
   changed(){this.emit('change');}
   private problem(e:unknown){if(this.closed)return;this.db.put('settings','problem',redact(String(e)));this.changed();}
@@ -113,22 +130,33 @@ export class ChatService extends EventEmitter {
     return {sent:true,entries:bundle.entries.length,summary:contextSummary(bundle)};
   }
   private active(){return this.db.list<Task>('task').find(t=>!['complete','cancelled'].includes(t.phase));}
+  private admittedActive(){return this.db.list<Task>('task').find(t=>t.admission==='accepted'&&!['complete','cancelled'].includes(t.phase));}
   private live(id:string){return !this.closed&&!this.db.get('cancel',id)&&!['cancelled','complete'].includes(this.db.task(id).phase);}
+  private rejectCandidate(t:Task,error:string){
+    t=this.db.task(t.id);t.admission='rejected';t.admissionError=redact(error);t.phase='cancelled';t.turn=undefined;t.pendingSubmit=undefined;t.pendingReview=undefined;this.db.save(t);
+    for(const w of this.db.list<{id:string;task:string}>('wake'))if(w.task===t.id)this.db.remove('wake',w.id);
+    this.db.message(t.id,'system','中转未接纳此候选任务，本机 Agent 未启动：'+t.admissionError);this.changed();
+  }
   private recordSupplement(t:Task,eventId:string){
-    t.requirements=[...new Set([...(t.requirements??[]),eventId])];t.pendingSubmit=undefined;t.pendingReview=undefined;t.reviewedSha=undefined;
+    if(t.pendingSubmit?.status==='running')t.uncertainAction={kind:'submit',turnId:t.pendingSubmit.turnId,summary:t.pendingSubmit.summary,reason:'用户新要求到达时宿主提交仍在执行；必须核对本地 HEAD、远端分支和结果事件'};
+    else t.pendingSubmit=undefined;
+    if(t.pendingReview?.status==='running')t.uncertainAction={kind:'review',turnId:t.pendingReview.turnId,summary:t.pendingReview.summary,reason:'用户新要求到达时审查结果仍在核验；旧审查不得用于新要求版本'};
+    t.requirements=[...new Set([...(t.requirements??[]),eventId])];t.pendingReview=undefined;t.reviewedSha=undefined;
+    if(!t.integration)t.results=Object.fromEntries(Object.entries(t.results).filter(([,r])=>sameRequirements(r.requirements,t.requirements)));
     if(t.integration&&t.initiator===this.room().member){if(t.phase==='paused')t.resumePhase='integrating';else t.phase='integrating';}
     this.db.save(t);
   }
-  private emitWire(t:Task,type:Wire['type'],payload:Wire['payload'],correlation?:string){const room=this.room();const e:Wire={id:randomUUID(),room:room.id,task:t.id,sender:room.member,type,payload,correlation,at:Date.now()};if(scanText(JSON.stringify(payload)))throw new Error('待发送消息含疑似凭据，请删除后重试');this.db.enqueue(e);this.relay?.flush();return e;}
+  private emitWire(t:Task,type:Wire['type'],payload:Wire['payload'],correlation?:string){const room=this.room();const e:Wire={id:randomUUID(),room:room.id,task:t.id,sender:room.member,type,payload,correlation,at:Date.now()};if(scanText(JSON.stringify(payload)))throw new Error('待发送消息含疑似凭据，请删除后重试');this.db.transaction(()=>{this.db.put('sent',e.id,e);this.db.enqueue(e);});this.relay?.flush();return e;}
   async start(goal:string){
     if(this.startingTask)throw new Error('正在创建任务，请稍候');this.startingTask=true;
     try{
     const {p,r}=this.authorized();if(this.active())throw new Error('当前房间已有任务，请在原会话补充要求或停止');if(!r.online)throw new Error('同伴离线，请等待连接');
     const base=await this.repo().base(),id=randomUUID();const work=await this.repo().worktree(id,r.member,base);
-    const task:Task={id,title:goal.slice(0,40),goal,initiator:r.member,base,...work,phase:'working',wakes:0,budget:20,repairs:0,results:{},created:Date.now()};
-    this.db.save(task);this.db.message(id,'user',goal);const start=this.emitWire(task,'start',{goal,base,remote:repositoryIdentity(p.remote)});
-    try{await this.relay!.accepted(start.id);}catch(e){this.pause(task,String(e));throw e;}
-    this.queue(task,`用户目标：${goal}\n你是发起方。先提出明确分工，通过 peer_send 与同伴确认。最终由你整合双方提交。`);this.changed();void this.pump(id);return id;
+    const task:Task={id,title:goal.slice(0,40),goal,initiator:r.member,base,...work,phase:'working',admission:'pending',wakes:0,budget:20,repairs:0,results:{},created:Date.now()};
+    this.db.save(task);this.db.message(id,'user',goal);const start=this.emitWire(task,'start',{goal,base,remote:repositoryIdentity(p.remote)});let current=this.db.task(id);current.admissionEventId=start.id;this.db.save(current);
+    try{if(!this.relay)throw new Error('中转连接尚未建立，任务接纳状态未知');await this.relay.accepted(start.id);}catch(e){current=this.db.task(id);const failure=this.db.get<any>('rejected',start.id);if(failure)this.rejectCandidate(current,String(failure.error??e));else{current.admission='unknown';current.admissionError=redact(String(e));this.db.save(current);this.pause(current,'中转尚未确认是否接纳任务。点击继续前会先重连并核对原始 start 事件；确认前不会启动本机 Agent。');}throw e;}
+    current=this.db.task(id);if(!this.live(id))throw new Error('任务在中转确认前已停止');current.admission='accepted';current.admissionError=undefined;this.db.save(current);
+    if(!this.db.list<{task:string}>('wake').some(w=>w.task===id))this.queue(current,`用户目标：${goal}\n你是发起方。先提出明确分工，通过 peer_send 与同伴确认。最终由你整合双方提交。`);this.changed();void this.pump(id);return id;
     }finally{this.startingTask=false;}
   }
   private queue(t:Task,text:string,id:string=randomUUID()){this.db.put('wake',id,{id,task:t.id,text});}
@@ -153,14 +181,16 @@ export class ChatService extends EventEmitter {
     let t=this.db.get<Task>('task',e.task);
     if(e.type==='start'&&!t){
       const p=z.object({goal:z.string().max(20000),base:z.string(),remote:z.string()}).parse(e.payload);
-      if(repositoryIdentity(this.project().remote)!==p.remote)throw new Error('双方仓库 origin 不匹配');if(this.active())throw new Error('本机已有活动任务');
+      if(repositoryIdentity(this.project().remote)!==p.remote)throw new Error('双方仓库 origin 不匹配');if(this.admittedActive())throw new Error('本机已有已接纳的活动任务');
       const work=await this.repo().worktree(e.task,this.room().member,p.base);
       if(this.db.get('cancel',e.task)||this.closed)return;
-      t={id:e.task,title:p.goal.slice(0,40),goal:p.goal,base:p.base,initiator:e.sender,...work,phase:'working',wakes:0,budget:20,repairs:0,results:{},created:Date.now()};
+      t={id:e.task,title:p.goal.slice(0,40),goal:p.goal,base:p.base,initiator:e.sender,...work,phase:'working',admission:'accepted',wakes:0,budget:20,repairs:0,results:{},created:Date.now()};
       this.db.save(t);this.db.message(t.id,'user',p.goal,'同伴发起');this.queue(t,`同伴用户目标：${p.goal}\n你是协作方。读取并确认发起方分工，独立完成自己的代码部分。`,e.id);
     }
     if(!t)throw new Error('消息所属任务尚未建立');
     if(['complete','cancelled'].includes(t.phase)){this.db.put('handled',e.id,true);return;}
+    // A peer event can only be replayed after the relay has accepted its start event.
+    if(t.admission!=='accepted'&&e.type!=='start'){t.admission='accepted';t.admissionError=undefined;this.db.save(t);}
     if(e.type==='message'||e.type==='supplement'){
       const text=z.string().min(1).max(20000).parse(e.payload.text);
       this.db.message(t.id,'collaboration',text,'同伴 → 本机',e.id);
@@ -174,7 +204,7 @@ export class ChatService extends EventEmitter {
       if(bundle)this.db.message(t.id,'context','同伴已同步进展 · '+contextSummary(bundle),'同伴 → 本机',e.id);
       // A progress export is data, not a request to wake the model.
     }
-    if(e.type==='result'){const result=resultSchema.parse(e.payload);await this.repo().fetchResult(t,result);if(!this.live(t.id))return;t=this.db.task(t.id);t.results[e.sender]=result;this.db.save(t);this.db.message(t.id,'system',`同伴已提交 ${result.sha.slice(0,12)}，检查 ${result.checks.length} 项。`);}
+    if(e.type==='result'){const result=resultSchema.parse(e.payload);await this.repo().fetchResult(t,result);if(!this.live(t.id))return;t=this.db.task(t.id);if(!sameRequirements(result.requirements,t.requirements)){this.db.put('handled',e.id,true);return;}t.results[e.sender]=result;this.db.save(t);this.db.message(t.id,'system',`同伴已提交 ${result.sha.slice(0,12)}，检查 ${result.checks.length} 项。`);}
     if(e.type==='review'){
       if(e.sender!==t.initiator)throw new Error('只有发起方可请求集成审查');const result=resultSchema.parse(e.payload);await this.repo().fetchResult(t,result);
       if(!this.live(t.id))return;t=this.db.task(t.id);
@@ -188,31 +218,39 @@ export class ChatService extends EventEmitter {
       if(t.initiator!==this.room().member||review.sha!==t.integration?.sha)throw new Error('审查不是当前集成提交');
       this.db.message(t.id,'collaboration',review.summary,'同伴 → 集成审查');
       if(review.approved){const integration=t.integration;const complete=this.emitWire(t,'complete',{sha:review.sha,summary:integration.summary,requirements:t.requirements});if(this.relay)await this.relay.accepted(complete.id);if(!this.live(t.id))return;t=this.db.task(t.id);if(!sameRequirements(review.requirements,t.requirements))return;t.reviewedSha=review.sha;t.phase='complete';this.db.save(t);this.db.message(t.id,'assistant',`共同任务已完成。\n${integration.summary}\n成果分支：${integration.branch}\n提交：${review.sha}\n同伴已检查整合结果。`);}
-      else{t.repairs++;if(t.repairs>=2)this.pause(t,'同伴连续两轮未通过集成审查：'+review.summary);else{t.phase='integrating';this.db.save(t);this.queue(t,'整合审查未通过，请修复并 submit_result：'+review.summary,e.id);}}
+      else{t.repairs++;if(t.repairs>=2){t.phase='integrating';this.pause(t,'同伴连续两轮未通过集成审查：'+review.summary,'integrating','repair-integration');}else{t.phase='integrating';this.db.save(t);this.queue(t,'整合审查未通过，请修复并 submit_result：'+review.summary,e.id);}}
     }
     if(e.type==='complete'){if(!t.integration||e.sender!==t.initiator||e.payload.sha!==t.integration.sha||t.reviewedSha!==e.payload.sha)throw new Error('完成消息没有对应已通过审查');t.phase='complete';this.db.save(t);this.db.message(t.id,'assistant','共同任务已完成。\n'+String(e.payload.summary)+'\n成果：'+t.integration.branch+' @ '+t.integration.sha);}
     this.db.put('handled',e.id,true);
   }
-  private pause(t:Task,error:string){if(!this.live(t.id))return;t=this.db.task(t.id);if(t.phase!=='paused')t.resumePhase=t.phase as Task['resumePhase'];t.phase='paused';t.error=redact(error);this.db.save(t);this.db.message(t.id,'system',t.error);this.changed();}
+  private invalidateTurnActions(t:Task,turnId:string|undefined,reason:string){
+    if(t.pendingSubmit&&(t.pendingSubmit.status==='awaiting-turn'&&(!turnId||t.pendingSubmit.turnId===turnId))){t.uncertainAction={kind:'submit',turnId:t.pendingSubmit.turnId,summary:t.pendingSubmit.summary,reason};t.pendingSubmit=undefined;}
+    if(t.pendingReview&&(t.pendingReview.status==='awaiting-turn'&&(!turnId||t.pendingReview.turnId===turnId))){t.uncertainAction={kind:'review',turnId:t.pendingReview.turnId,summary:t.pendingReview.summary,reason};t.pendingReview=undefined;}
+    return t;
+  }
+  private pause(t:Task,error:string,resumePhase?:Task['resumePhase'],resumeAction?:Task['resumeAction']){if(!this.live(t.id))return;t=this.db.task(t.id);if(t.phase!=='paused')t.resumePhase=resumePhase??t.phase as Task['resumePhase'];if(resumeAction)t.resumeAction=resumeAction;t.phase='paused';t.error=redact(error);this.db.save(t);this.db.message(t.id,'system',t.error);this.changed();}
   private async pump(id:string){
-    if(this.busy.has(id)||this.closed)return;let t=this.db.task(id);if(t.turn||['paused','cancelled','complete'].includes(t.phase))return;
+    if(this.busy.has(id)||this.closed)return;let t=this.db.task(id);if(t.admission!=='accepted'||t.turn||['paused','cancelled','complete'].includes(t.phase))return;
     if(!this.room().online)return;this.busy.add(id);
     try{
       this.authorized();
-      if(t.pendingSubmit){await this.finishSubmission(t);t=this.db.task(id);}
-      if(t.pendingReview){await this.finishReview(t);t=this.db.task(id);}
+      if(t.pendingSubmit?.status==='ready'){await this.finishSubmission(t);t=this.db.task(id);}
+      if(t.pendingSubmit?.status==='running'){await this.reconcilePendingSubmit(t);t=this.db.task(id);if(t.pendingSubmit?.status==='running'){this.pause(t,'上次宿主提交仍无法对账，已停止本轮自动执行。');return;}}
+      if(t.pendingReview?.status==='ready'){await this.finishReview(t);t=this.db.task(id);}
       if(!this.live(id))return;
       if(t.phase==='working'&&t.initiator===this.room().member&&Object.keys(t.results).length===2){
         t.phase='integrating';this.db.save(t);
-        try{const work=await this.repo().integrate(t,this.room().member);Object.assign(t,work,{thread:undefined});}
-        catch(error){const work=await this.repo().worktree(t.id,this.room().member,t.base,'integration');Object.assign(t,work,{thread:undefined});this.db.message(t.id,'system','集成遇到冲突，由发起方 Agent 处理：'+redact(String(error)));}
-        if(!this.live(id))return;this.db.save(t);this.queue(t,'已进入独立集成工作树。核对双方提交是否均已整合，处理 Git 冲突（如有）。允许在此工作树完成合并冲突的 git add/commit 和合并下列已验证提交，不得自行 push。完成目标并 submit_result。双方结果：'+JSON.stringify(t.results));
+        let work:{path:string;branch:string};
+        try{work=await this.repo().integrate(t,this.room().member);}
+        catch(error){work=await this.repo().worktree(t.id,this.room().member,t.base,'integration');if(!this.live(id))return;this.db.message(t.id,'system','集成遇到冲突，由发起方 Agent 处理：'+redact(String(error)));}
+        if(!this.live(id))return;t=this.db.task(id);t.path=work.path;t.branch=work.branch;t.thread=undefined;t.phase='integrating';this.db.save(t);this.queue(t,'已进入独立集成工作树。核对双方提交是否均已整合，处理 Git 冲突（如有）。允许在此工作树完成合并冲突的 git add/commit 和合并下列已验证提交，不得自行 push。完成目标并 submit_result。双方结果：'+JSON.stringify(t.results));
       }
       const wakes=this.db.list<{id:string;task:string;text:string}>('wake').filter(w=>w.task===id);if(!wakes.length)return;
       if(t.wakes>=t.budget){this.pause(t,'已达到本次 20 次自动协作唤醒预算，进度已保存。点击继续可增加 20 次。');return;}
       // 同伴上下文只带上本机尚未读入的部分，读完即标记，避免每轮重试重复占用上下文窗口。
       const contexts=this.unseenContext(id);
-      const prompt=[wakes.map(w=>w.text).join('\n\n'),formatContexts(contexts)].filter(Boolean).join('\n\n');
+      const recovery=t.uncertainAction?`恢复提示：${t.uncertainAction.kind==='submit'?'提交':'审查'}请求未确认（${t.uncertainAction.reason}）。不要重放旧请求；先核对当前工作树、HEAD、对端消息和已有结果事件，再按最新要求继续。`:'';
+      const prompt=[wakes.map(w=>w.text).join('\n\n'),recovery,formatContexts(contexts)].filter(Boolean).join('\n\n');
       await this.server.start();
       if(!this.live(id))return;
       const config={'sandbox_workspace_write.network_access':false,'features.apps':false,'features.multi_agent':false};
@@ -225,35 +263,70 @@ export class ChatService extends EventEmitter {
       const current=this.db.task(id);if(current.turn==='starting'){current.turn=r.turn.id;this.db.save(current);}
       if(this.db.get('cancel',id))await this.server.request('turn/interrupt',{threadId:t.thread,turnId:r.turn.id});
     }catch(e){t=this.db.task(id);if(this.live(id)){t.turn=undefined;
-      if(t.pendingSubmit&&t.repairs<2){t.repairs++;t.pendingSubmit=undefined;this.db.save(t);this.db.message(id,'system','检查或提交失败，交给 Agent 修复：'+redact(String(e)));this.queue(t,'实际检查或提交失败，请检查现有提交避免重复，并修复后 submit_result：'+redact(String(e)));}
-      else this.pause(t,String(e));
+      if(t.pendingSubmit?.status==='running')t.uncertainAction={kind:'submit',turnId:t.pendingSubmit.turnId,summary:t.pendingSubmit.summary,reason:'宿主检查、提交或推送中断，需先核对本地 HEAD、远端分支和事件确认'};
+      if(t.pendingReview?.status==='running')t.uncertainAction={kind:'review',turnId:t.pendingReview.turnId,summary:t.pendingReview.summary,reason:'审查处理期间进程中断，需检查是否已有审查事件'};
+      this.db.save(t);this.pause(t,String(e));
     }}finally{this.busy.delete(id);if(this.closed)return;this.changed();const current=this.db.task(id);if(!current.turn&&!['paused','complete','cancelled'].includes(current.phase)&&(current.pendingSubmit||current.pendingReview||this.db.list<any>('wake').some(w=>w.task===id)))setTimeout(()=>void this.pump(id),0);if(this.db.list<Wire>('inbox').some(e=>e.task===id)&&current.phase!=='paused')void this.drain();}
   }
   private async finishSubmission(t:Task){
+    const pending=t.pendingSubmit;if(!pending||pending.status!=='ready')return;
+    pending.status='running';t.pendingSubmit=pending;this.db.save(t);
     const abort=new AbortController();this.aborts.set(t.id,abort);
-    try{
-      const requirements=[...(t.requirements??[])];const result=await this.repo().commit(t,t.pendingSubmit!,abort.signal);if(this.db.get('cancel',t.id))return;t=this.db.task(t.id);
-      if(!sameRequirements(requirements,t.requirements))return;result.requirements=requirements;
-      if(t.phase==='integrating'){
-        // A clean-looking merge is insufficient: both submitted histories must be present.
-        for(const r of Object.values(t.results))await git(t.path,['merge-base','--is-ancestor',r.sha,result.sha]);
-        if(!this.live(t.id))return;t=this.db.task(t.id);if(!sameRequirements(requirements,t.requirements))return;
-        t.integration=result;t.phase='reviewing';this.emitWire(t,'review',result);
-      }else{t.results[this.room().member]=result;this.emitWire(t,'result',result);}
-      t.pendingSubmit=undefined;this.db.save(t);this.db.message(t.id,'system',`已扫描、检查并同步 ${result.branch} @ ${result.sha.slice(0,12)}`);
-    }finally{this.aborts.delete(t.id);}
+    try{const result=await this.repo().commit(t,pending.summary,abort.signal);if(!this.live(t.id)||!this.ownsSubmit(t.id,pending))return;await this.publishSubmission(this.db.task(t.id),pending,result);}
+    finally{this.aborts.delete(t.id);}
   }
+  private ownsSubmit(id:string,pending:PendingSubmit){const t=this.db.task(id);return t.pendingSubmit?.turnId===pending.turnId&&t.pendingSubmit.status==='running'&&sameRequirements(t.pendingSubmit.requirements,pending.requirements)&&sameRequirements(t.requirements,pending.requirements);}
+  private sentForRequest(task:string,type:Wire['type'],requestId:string){return this.db.list<Wire>('sent').find(e=>e.task===task&&e.type===type&&e.correlation===requestId);}
+  private async publishSubmission(t:Task,pending:PendingSubmit,result:Result,existing?:Wire){
+    if(!this.ownsSubmit(t.id,pending))return;
+    result.requirements=[...pending.requirements];
+    const phase=t.phase==='paused'?t.resumePhase:t.phase;
+    if(phase==='integrating'){
+      // A clean-looking merge is insufficient: both submitted histories must be present.
+      for(const r of Object.values(t.results)){await git(t.path,['merge-base','--is-ancestor',r.sha,result.sha]);if(!this.live(t.id)||!this.ownsSubmit(t.id,pending))return;t=this.db.task(t.id);}
+      if(!existing)existing=this.emitWire(t,'review',result,pending.requestId);
+    }else{
+      if(!existing)existing=this.emitWire(t,'result',result,pending.requestId);
+    }
+    t=this.db.task(t.id);if(!this.ownsSubmit(t.id,pending))return;
+    if(existing.type==='review'){t.integration=result;t.phase='reviewing';}
+    else{t.results[this.room().member]=result;if(t.phase==='paused')t.phase='working';}
+    t.pendingSubmit=undefined;t.uncertainAction=undefined;this.db.save(t);this.db.message(t.id,'system',`已扫描、检查并确认 ${result.branch} @ ${result.sha.slice(0,12)}`);
+  }
+  private async reconcilePendingSubmit(t:Task){
+    const pending=t.pendingSubmit;if(!pending||pending.status!=='running')return;
+    const sent=this.sentForRequest(t.id,'result',pending.requestId)??this.sentForRequest(t.id,'review',pending.requestId);
+    if(!sameRequirements(pending.requirements,t.requirements)){
+      let published=sent?.payload.sha;
+      if(!sent)try{published=(await this.repo().reconcileCommitted(t,pending.summary))?.sha;}catch(error){t=this.db.task(t.id);t.uncertainAction={kind:'submit',turnId:pending.turnId,summary:pending.summary,reason:'新要求到达后无法完成旧提交对账：'+redact(String(error))};if(t.pendingSubmit?.turnId===pending.turnId)t.pendingSubmit=undefined;this.db.save(t);return;}
+      t=this.db.task(t.id);if(t.pendingSubmit?.turnId===pending.turnId){t.uncertainAction={kind:'submit',turnId:pending.turnId,summary:pending.summary,reason:published?`旧要求版本的提交已发布到远端（SHA ${published}），不会将它登记为新要求结果`:'提交与新要求版本不一致且未确认发布；不会重放旧请求'};t.pendingSubmit=undefined;this.db.save(t);}return;
+    }
+    if(sent){const result=resultSchema.parse(sent.payload);await this.publishSubmission(t,pending,result,sent);return;}
+    try{const result=await this.repo().reconcileCommitted(t,pending.summary);t=this.db.task(t.id);if(!this.ownsSubmit(t.id,pending))return;if(result){await this.publishSubmission(t,pending,result);return;}}
+    catch(error){t=this.db.task(t.id);t.uncertainAction={kind:'submit',turnId:pending.turnId,summary:pending.summary,reason:'恢复时读取本地 HEAD、远端分支或检查结果失败：'+redact(String(error))};t.pendingSubmit=undefined;this.db.save(t);return;}
+    t=this.db.task(t.id);if(t.pendingSubmit?.turnId===pending.turnId){t.uncertainAction={kind:'submit',turnId:pending.turnId,summary:pending.summary,reason:'恢复核对未发现已确认的结果事件或与本地 HEAD 相同的远端 SHA；不会重放旧提交请求'};t.pendingSubmit=undefined;this.db.save(t);}
+  }
+  private reconcilePendingReview(t:Task){
+    const pending=t.pendingReview;if(!pending||pending.status!=='running')return;
+    const sent=this.sentForRequest(t.id,'reviewed',pending.requestId);t=this.db.task(t.id);
+    if(sent){if(t.pendingReview?.turnId===pending.turnId){t.pendingReview=undefined;t.uncertainAction=undefined;this.db.save(t);}return;}
+    if(t.pendingReview?.turnId===pending.turnId){t.uncertainAction={kind:'review',turnId:pending.turnId,summary:pending.summary,reason:'恢复时没有找到对应的审查结果事件；需要重新核对后再提交审查'};t.pendingReview=undefined;this.db.save(t);}
+  }
+  private ownsReview(id:string,pending:PendingReview){const t=this.db.task(id);return t.pendingReview?.turnId===pending.turnId&&t.pendingReview.status==='running'&&sameRequirements(t.pendingReview.requirements,pending.requirements)&&sameRequirements(t.requirements,pending.requirements)&&t.integration?.sha===pending.sha;}
   private async finishReview(t:Task){
-    const review={...t.pendingReview!};if(!t.integration)throw new Error('没有可审查提交');const sha=t.integration.sha,requirements=t.integration.requirements;
-    if(!sameRequirements(requirements,t.requirements)){t.pendingReview=undefined;this.db.save(t);return;}
+    const pending=t.pendingReview;if(!pending||pending.status!=='ready')return;
+    if(!t.integration)throw new Error('没有可审查提交');
+    pending.status='running';t.pendingReview=pending;this.db.save(t);const sha=pending.sha,requirements=pending.requirements;
     const abort=new AbortController();this.aborts.set(t.id,abort);
     try{
       await this.repo().verifyReview(t.path,sha);if(!this.live(t.id))return;
       const checks=await this.repo().checks(t.path,abort.signal);if(!this.live(t.id))return;
       await this.repo().verifyReview(t.path,sha);if(!this.live(t.id))return;
-      if(checks.some(c=>c.code!==0)){review.approved=false;review.summary+='\n本机约定检查失败：'+checks.map(c=>c.output).join('\n');}
-      t=this.db.task(t.id);if(!sameRequirements(requirements,t.requirements))return;if(review.approved)t.reviewedSha=sha;
-      this.emitWire(t,'reviewed',{...review,sha,requirements});t.pendingReview=undefined;this.db.save(t);
+      if(checks.some(c=>c.code!==0)){pending.approved=false;pending.summary+='\n本机约定检查失败：'+checks.map(c=>c.output).join('\n');}
+      t=this.db.task(t.id);if(!this.ownsReview(t.id,pending))return;if(pending.approved)t.reviewedSha=sha;this.db.save(t);
+      // Persist the exact approval before sending it. The initiator may receive this
+      // event and return `complete` immediately on another device.
+      this.emitWire(t,'reviewed',{approved:pending.approved,summary:pending.summary,sha,requirements},pending.requestId);t=this.db.task(t.id);if(t.pendingReview?.requestId!==pending.requestId)return;t.pendingReview=undefined;t.uncertainAction=undefined;this.db.save(t);
     }finally{this.aborts.delete(t.id);}
   }
   private async notification(m:any){
@@ -265,17 +338,22 @@ export class ChatService extends EventEmitter {
     }
     if(m.method==='item/completed'&&p.item?.type==='commandExecution')this.db.message(t.id,'terminal',redact(p.item.command+'\n'+(p.item.aggregatedOutput??'')).slice(-30000));
     if(m.method==='turn/completed'){
-      t.turn=undefined;this.db.save(t);for(const [id,a] of this.permissions)if(a.task===t.id)this.permissions.delete(id);
-      if(!['cancelled','complete'].includes(t.phase)){
-        if(p.turn.status==='failed'||p.turn.status==='interrupted')this.pause(t,p.turn.error?.message??'本轮已中断，可检查后继续');
-        else{void this.pump(t.id);void this.drain();}
+      const turnId=typeof p.turn?.id==='string'?p.turn.id:undefined;let current=this.db.task(t.id);
+      if(!turnId||(current.turn!=='starting'&&current.turn!==turnId))return;
+      const successful=p.turn.status==='completed';
+      if(successful){const submit=current.pendingSubmit,review=current.pendingReview;if(submit&&submit.turnId===turnId&&submit.status==='awaiting-turn')submit.status='ready';if(review&&review.turnId===turnId&&review.status==='awaiting-turn')review.status='ready';}
+      else current=this.invalidateTurnActions(current,turnId,p.turn.error?.message??'本轮未成功完成');
+      current.turn=undefined;this.db.save(current);for(const [id,a] of this.permissions)if(a.task===t.id)this.permissions.delete(id);
+      if(!['cancelled','complete'].includes(current.phase)){
+        if(!successful)this.pause(current,p.turn.error?.message??'本轮已中断，可检查后继续');
+        else{void this.pump(current.id);void this.drain();}
       }
     }
     this.changed();
   }
   private async request(m:any){
     if(this.closed)return;
-    const p=m.params??{},t=this.db.list<Task>('task').find(t=>t.thread===p.threadId);if(!t||this.db.get('cancel',t.id)){this.server.reject(m.id,'任务已取消或不存在');return;}
+    const p=m.params??{},t=this.db.list<Task>('task').find(t=>t.thread===p.threadId);if(!t||this.db.get('cancel',t.id)){this.server.reject(m.id,'任务已取消或不存在');return;}if(t.admission!=='accepted'){this.server.reject(m.id,'中转尚未接纳此任务');return;}
     if(m.method==='item/tool/call'){
       let result:unknown;
       try{const args=p.arguments??{};
@@ -293,8 +371,8 @@ export class ChatService extends EventEmitter {
           this.db.message(t.id,'collaboration',text,'本机 → 同伴');
           result={queued:true,peerOnline:this.room().online,contextShared:context?context.entries.length:0};
         }
-        else if(p.tool==='submit_result'){if(t.phase==='reviewing')throw new Error('审查阶段请使用 submit_review');t.pendingSubmit=z.string().min(1).max(16000).parse(args.summary);this.db.save(t);result={queued:true,instruction:'请结束本轮，宿主将运行检查和提交。'};}
-        else if(p.tool==='submit_review'){if(t.phase!=='reviewing'||t.initiator===this.room().member)throw new Error('只有同伴能审查集成结果');t.pendingReview=z.object({approved:z.boolean(),summary:z.string().max(16000)}).parse(args);this.db.save(t);result={queued:true};}
+        else if(p.tool==='submit_result'){if(t.phase==='reviewing')throw new Error('审查阶段请使用 submit_review');const turnId=z.string().min(1).max(200).parse(p.turnId??t.turn);if(t.turn==='starting'||t.turn!==turnId)throw new Error('提交请求不属于当前 Codex 轮次');const summary=z.string().min(1).max(16000).parse(args.summary);const current=this.db.task(t.id);current.pendingSubmit={summary,requestId:randomUUID(),turnId,requirements:[...(current.requirements??[])],status:'awaiting-turn'};this.db.save(current);result={queued:true,instruction:'请正常结束本轮；只有本轮成功完成后宿主才会检查并提交。'};}
+        else if(p.tool==='submit_review'){if(t.phase!=='reviewing'||t.initiator===this.room().member||!t.integration)throw new Error('只有同伴能审查集成结果');const turnId=z.string().min(1).max(200).parse(p.turnId??t.turn);if(t.turn==='starting'||t.turn!==turnId)throw new Error('审查请求不属于当前 Codex 轮次');const review=z.object({approved:z.boolean(),summary:z.string().max(16000)}).parse(args);const requirements=[...(t.integration.requirements??[])];if(!sameRequirements(requirements,t.requirements))throw new Error('集成提交已过期，不能提交审查');const current=this.db.task(t.id);current.pendingReview={...review,requestId:randomUUID(),turnId,sha:t.integration.sha,requirements,status:'awaiting-turn'};this.db.save(current);result={queued:true,instruction:'请正常结束本轮；只有本轮成功完成后宿主才会登记审查结果。'};}
         else throw new Error('未知协作工具');
         this.server.respond(m.id,{success:true,contentItems:[{type:'inputText',text:JSON.stringify(result)}]});
       }catch(e){this.server.respond(m.id,{success:false,contentItems:[{type:'inputText',text:redact(String(e))}]});}
@@ -310,13 +388,38 @@ export class ChatService extends EventEmitter {
   async supplement(id:string,text:string){const t=this.db.task(id);if(['complete','cancelled'].includes(t.phase))throw new Error('任务已结束，请新建会话');const event=this.emitWire(t,'supplement',{text});this.recordSupplement(t,event.id);this.db.message(id,'user',text);if(t.turn&&t.turn!=='starting')await this.server.request('turn/steer',{threadId:t.thread,expectedTurnId:t.turn,input:textInput(text)});else{this.queue(t,'用户补充：'+text);void this.pump(id);}this.changed();}
   async stop(id:string,broadcast=true){
     const t=this.db.task(id);if(t.phase==='complete'||t.phase==='cancelled')return;const turn=t.turn;
-    this.db.put('cancel',id,true);t.phase='cancelled';t.turn=undefined;t.pendingSubmit=undefined;t.pendingReview=undefined;this.db.save(t);this.aborts.get(id)?.abort();
+    this.db.put('cancel',id,true);t.phase='cancelled';t.turn=undefined;t.pendingSubmit=undefined;t.pendingReview=undefined;t.uncertainAction=undefined;t.resumeAction=undefined;this.db.save(t);this.aborts.get(id)?.abort();
     for(const [key,p] of this.permissions)if(p.task===id){try{this.server.reject(p.rpc,'任务已停止');}catch{}this.permissions.delete(key);}
     for(const w of this.db.list<{id:string;task:string}>('wake'))if(w.task===id)this.db.remove('wake',w.id);
     if(broadcast)this.emitWire(t,'cancel',{});this.db.message(id,'system','共享任务已停止。工作树与修改保留；离线同伴重连时先处理取消记录。');this.changed();
     if(turn&&turn!=='starting')try{await this.server.request('turn/interrupt',{threadId:t.thread,turnId:turn});}catch(e){this.problem(e);}
   }
-  async resume(id:string){let t=this.db.task(id);if(t.phase!=='paused')throw new Error('只有暂停任务可以继续');this.authorized();if(this.db.get('cancel',id))throw new Error('已取消任务不能恢复');t.phase=t.resumePhase??'working';t.budget+=20;t.error=undefined;this.db.save(t);if(!t.pendingSubmit&&!t.pendingReview&&(t.phase!=='reviewing'||t.initiator!==this.room().member))this.queue(t,'用户确认继续。先检查现有工作树、提交和消息，避免重复已完成动作。'+(this.db.get<any>('checkpoint',id)?.text??''));await this.drain();void this.pump(id);this.changed();}
+  async resume(id:string){
+    let t=this.db.task(id);if(t.phase!=='paused')throw new Error('只有暂停任务可以继续');this.authorized();if(this.db.get('cancel',id))throw new Error('已取消任务不能恢复');
+    if(t.admission==='pending'||t.admission==='unknown'){
+      if(!t.admissionEventId||!this.relay){throw new Error('无法证明中转已接纳此任务；本机 Agent 不会启动，请重新发起共享任务。');}
+      try{await this.relay.accepted(t.admissionEventId);}
+      catch(error){const failure=this.db.get<any>('rejected',t.admissionEventId);if(failure){this.rejectCandidate(t,String(failure.error??error));throw new Error('中转明确拒绝此任务；候选任务已退出，本机 Agent 未启动。');}throw new Error('中转仍未确认此任务；原始 start 事件已保留，Agent 未启动。 '+String(error));}
+      t=this.db.task(id);t.admission='accepted';t.admissionError=undefined;this.db.save(t);
+    }
+    if(t.admission!=='accepted')throw new Error('此任务没有中转接纳凭证，本机 Agent 不会启动。');
+    const hadRunningAction=t.pendingSubmit?.status==='running'||t.pendingReview?.status==='running';
+    if(t.pendingSubmit?.status==='running')await this.reconcilePendingSubmit(t);
+    t=this.db.task(id);if(t.pendingReview?.status==='running')this.reconcilePendingReview(t);
+    t=this.db.task(id);
+    if(hadRunningAction&&!t.uncertainAction&&!t.pendingSubmit&&!t.pendingReview){if(t.phase==='paused'){t.phase=t.resumePhase??'working';t.error=undefined;this.db.save(t);}await this.drain();this.changed();return;}
+    const previousError=t.error??'上次任务需要检查';
+    const repair=t.resumeAction==='repair-integration';
+    t.phase=repair?'integrating':t.resumePhase??'working';t.budget+=20;t.error=undefined;
+    if(repair){t.repairs=0;t.resumeAction=undefined;}
+    this.db.save(t);
+    if(repair){this.queue(t,'用户确认继续整合修复。请根据同伴拒绝理由修复现有整合工作树，重新检查后提交新的整合 SHA；这次恢复从新的两轮修复周期开始。此前理由：'+previousError);}
+    else if(!t.pendingSubmit&&!t.pendingReview&&(t.phase!=='reviewing'||t.initiator!==this.room().member)){
+      const uncertain=t.uncertainAction?`上一轮 ${t.uncertainAction.kind==='submit'?'提交':'审查'} 请求没有确认（${t.uncertainAction.reason}）。不要重放旧请求或直接提交；先检查当前分支、HEAD、工作区、对端消息及已有结果事件，再基于当前状态继续。\n` :'';
+      this.queue(t,uncertain+'用户确认继续。先检查现有工作树、提交和消息，避免重复已完成动作。'+(this.db.get<any>('checkpoint',id)?.text??''));
+    }
+    await this.drain();void this.pump(id);this.changed();
+  }
   async diff(id:string){return this.repo().diff(this.db.task(id));}
   close(){this.closed=true;this.relay?.close();for(const a of this.aborts.values())a.abort();this.server.close();}
 }

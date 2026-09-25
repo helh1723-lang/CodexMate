@@ -2,6 +2,15 @@
 
 2026-09-25：用户要求复查另一位 Agent 的后续开发并修复问题。
 
+## 2026-09-25：核心协作状态与恢复修复
+
+- 宿主 Git 统一使用 `$CODEXMATE_HOME/disabled-git-hooks`，并验证该目录位于真实仓库外、不是符号链接且为空；所有 Git 适配器入口和宿主检查命令都采用此配置。
+- 任务 start 增加 pending / accepted / rejected / unknown 接纳状态。Agent 只能在中转确认后运行；超时保留原事件供对账，明确拒绝退出候选任务。同时发起测试覆盖只保留一个活动任务。
+- 异步整合只合并路径、分支等本步骤字段；结果、整合、审查均绑定要求版本。整合、提交和审查等待期间新增要求的回归测试已覆盖。
+- `submit_result` / `submit_review` 绑定 `turnId`。失败或中断会使对应动作转入对账；重启时检查已发送结果事件，或确认本地 HEAD 与远端分支 SHA 完全一致后恢复，未确认时不会重放提交。
+- 两轮审查拒绝后继续会回到整合修复阶段，并从新的两轮修复周期开始。
+- 修正文档中手动改写 `.git/refs/*` 的建议，改为只读诊断 Git 目录/引用/锁状态。
+
 ## 已复查修复
 
 - Electron 入口顶层等待就绪导致无法启动，改为非阻塞初始化；真实窗口和登录检测通过。
@@ -18,7 +27,7 @@
 
 ## 验证进度
 
-类型检查、23 项单元/集成测试和构建通过。真实 Electron 窗口、当前账号登录检测、contextIsolation/nodeIntegration/sandbox 检查通过。浏览器、真实上下文召回和最终安装包结果以 [acceptance.md](acceptance.md) 的最终记录为准。
+2026-09-25 本轮 `npm run check` 全部通过：TypeScript 类型检查、35/35 单元与集成测试、Vite 生产构建。此前真实 Electron 窗口、当前账号登录检测和真实 Codex 上下文证据仍按 [acceptance.md](acceptance.md) 的历史验收记录；本轮未执行 macOS 或双账号异地实机验证。
 
 ## 提交与发布
 
@@ -26,7 +35,7 @@
 - 提交 `c2b6844` → `origin/codex/minimal-agent-chat`（81 个文件，+1996 / -3543）；`main` 未改动，仍为 9986ddb。
 - 旧版追溯标签 `pre-chat-redesign-20260924` 已推送到远端。
 - PR #1（draft）作为审查与更新记录；未完成双人双机实测前不合并主分支，也不自动部署。
-- 本机 git 无法在 `.git/` 下新建目录，含 `/` 的分支名需要手动补写引用文件，详见 [HANDOFF.md](../HANDOFF.md)。
+- 历史交接曾误把一次 Git 目录异常写成通用限制并建议手动编辑 refs；已在 [HANDOFF.md](../HANDOFF.md) 改为只读诊断流程。
 
 ## 未达到的验收
 

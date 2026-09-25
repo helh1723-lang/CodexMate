@@ -13,6 +13,7 @@ import { RelayClient,relayUrl } from '../src/chat/relay-client.js';
 import { git } from '../src/adapters/git.js';
 import type { Task,Room,Wire } from '../src/chat/model.js';
 import { itemsToEntries, fit, rowsAfter, formatPeerContext, buildBundle, contextBundleSchema, SYNC_BUDGET_AUTO, INJECT_BUDGET, RECENT_KEEP } from '../src/chat/context.js';
+process.env.CODEXMATE_HOME=join(tmpdir(),'codexmate-chat-test-host-'+process.pid);
 const sleep=(ms=30)=>new Promise(r=>setTimeout(r,ms));
 async function until(fn:()=>boolean,timeout=15000){const start=Date.now();while(!fn()){if(Date.now()-start>timeout)throw new Error('等待状态超时');await sleep();}}
 async function relayFixture(){const home=await mkdtemp(join(tmpdir(),'cm-relay-')),relay=createRelay(home);await new Promise<void>(r=>relay.http.listen(0,'127.0.0.1',r));const a=relay.http.address() as any,url=`http://127.0.0.1:${a.port}`;return {...relay,url,home};}
@@ -24,7 +25,7 @@ test('durable relay pairs only two, deduplicates, replays cancellation before pe
   const da=new ChatStore(join(relay.home,'a')),db=new ChatStore(join(relay.home,'b'));
   const ca=new RelayClient(da,{...a,url:relay.url}),cb=new RelayClient(db,{...b,url:relay.url});
   try{ca.connect();cb.connect();await until(()=>!!ca.room.online);
-    const task=randomUUID(),event:Wire={id:randomUUID(),room:a.id,sender:a.member,task,type:'start',payload:{goal:'hello'},at:Date.now()};da.enqueue(event);ca.flush();await until(()=>db.list('inbox').length===1);da.enqueue(event);ca.flush();await sleep(150);assert.equal(db.list('inbox').length,1);
+    const task=randomUUID(),event:Wire={id:randomUUID(),room:a.id,sender:a.member,task,type:'start',payload:{goal:'hello'},at:Date.now()};da.enqueue(event);ca.flush();await until(()=>db.list('inbox').length===1);await until(()=>!!da.get('relay-accepted',event.id));da.enqueue(event);ca.flush();await sleep(150);assert.equal(db.list('inbox').length,1);
     cb.close();await until(()=>!ca.room.online);const cancel:Wire={...event,id:randomUUID(),type:'cancel',payload:{}};da.enqueue(cancel);ca.flush();await until(()=>!da.list('outbox').length);cb.connect();await until(()=>!!db.get('cancel',task));assert.equal(db.list<Wire>('inbox').filter(e=>e.type==='cancel').length,1);
     assert.equal(relay.db.list('event').length,2);
   }finally{ca.close();cb.close();await sleep();da.close();db.close();await relay.close();}
