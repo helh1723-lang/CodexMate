@@ -1,5 +1,5 @@
-import { mkdir } from 'node:fs/promises';
-import { join, resolve } from 'node:path';
+import { mkdir, realpath } from 'node:fs/promises';
+import { join } from 'node:path';
 import { git, GitWorktree, hostGitEnvironment } from '../adapters/git.js';
 import { exec } from '../adapters/process.js';
 import { redact } from '../core/security.js';
@@ -8,7 +8,7 @@ export const shaPattern=/^[0-9a-f]{40,64}$/;
 export function repositoryIdentity(remote:string){return remote.replace(/^git@([^:]+):/,'https://$1/').replace(/^ssh:\/\/git@/,'https://').replace(/\.git$/,'').replace(/\/$/,'');}
 export class Repository {
   constructor(public project:Project,private home:string){}
-  async verify(){const root=await git(this.project.path,['rev-parse','--show-toplevel']);if(resolve(root)!==resolve(this.project.path))throw new Error('请选择仓库根目录');const remote=await git(this.project.path,['remote','get-url','origin']);if(remote!==this.project.remote)throw new Error('仓库 origin 已改变，需要重新授权');}
+  async verify(){const root=await git(this.project.path,['rev-parse','--show-toplevel']),[canonicalRoot,canonicalProject]=await Promise.all([realpath(root),realpath(this.project.path)]);const samePath=process.platform==='win32'?canonicalRoot.toLowerCase()===canonicalProject.toLowerCase():canonicalRoot===canonicalProject;if(!samePath)throw new Error('请选择仓库根目录');const remote=await git(this.project.path,['remote','get-url','origin']);if(remote!==this.project.remote)throw new Error('仓库 origin 已改变，需要重新授权');}
   async base(){await this.verify();await git(this.project.path,['fetch','origin']);const head=await git(this.project.path,['rev-parse','HEAD']);const refs=await git(this.project.path,['branch','-r','--contains',head]);if(!refs.trim())throw new Error('当前 HEAD 尚未同步到 origin，请先推送项目基准提交');return head;}
   async worktree(task:string,member:string,base:string,kind='work'){
     await this.verify();if(!shaPattern.test(base))throw new Error('基准提交格式错误');
