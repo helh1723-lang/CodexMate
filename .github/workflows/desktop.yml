@@ -1,14 +1,20 @@
-name: Desktop builds
+name: Desktop packages
+
 on:
   workflow_dispatch:
   push:
-    tags: ['chat-v*']
+    branches:
+      - codex/minimal-agent-chat
+    tags:
+      - 'chat-v*'
+
+permissions:
+  contents: read
+
 jobs:
-  build:
-    strategy:
-      matrix:
-        os: [windows-latest, macos-latest]
-    runs-on: ${{ matrix.os }}
+  windows-x64:
+    name: Windows x64 installer
+    runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -18,14 +24,122 @@ jobs:
       - run: npm ci
       - run: npm run check
       - run: npm run dist:win
-        if: runner.os == 'Windows'
-      - run: npm run dist:mac
-        if: runner.os == 'macOS'
-        env:
-          CSC_IDENTITY_AUTO_DISCOVERY: false
+      - name: Install and launch the packaged app
+        shell: pwsh
+        run: |
+          $installers = @(Get-ChildItem -Path artifacts/desktop -File -Filter '*.exe')
+          if ($installers.Count -ne 1) { throw "Expected one NSIS installer, found $($installers.Count)" }
+          & "$env:GITHUB_WORKSPACE/scripts/smoke-windows-installer.ps1" -InstallerPath $installers[0].FullName
+      - name: Stage release asset
+        shell: pwsh
+        run: |
+          $version = (Get-Content package.json -Raw | ConvertFrom-Json).version
+          $installer = @(Get-ChildItem -Path artifacts/desktop -File -Filter '*.exe')
+          New-Item -ItemType Directory -Path artifacts/release -Force | Out-Null
+          Copy-Item -LiteralPath $installer[0].FullName -Destination "artifacts/release/CodexMate-$version-Windows-x64.exe"
       - uses: actions/upload-artifact@v4
         with:
-          name: CodexMate-${{ runner.os }}
-          path: |
-            artifacts/desktop/*.exe
-            artifacts/desktop/*.dmg
+          name: CodexMate-Windows-x64
+          path: artifacts/release/*
+          if-no-files-found: error
+          retention-days: 30
+
+  macos:
+    name: macOS ${{ matrix.arch }} DMG
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: arm64
+            runner: macos-15
+          - arch: x64
+            runner: macos-15-intel
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run check
+      - name: Verify native build architecture
+        shell: bash
+        run: |
+          actual="$(uname -m)"
+          expected="${{ matrix.arch }}"
+          if [[ "$expected" == "x64" ]]; then expected="x86_64"; fi
+          test "$actual" = "$expected"
+      - name: Build macOS DMG
+        run: npm run dist:mac
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: false
+      - name: Mount DMG, verify architecture, and launch packaged app
+        shell: bash
+        run: |
+          dmg="$(find artifacts/desktop -maxdepth 1 -type f -name '*.dmg' -print -quit)"
+          test -n "$dmg"
+          node scripts/smoke-macos-dmg.mjs "$dmg" '${{ matrix.arch }}'
+      - name: Stage release asset
+        shell: bash
+        run: |
+          version="$(node -p "require('./package.json').version")"
+          mkdir -p artifacts/release
+          set -- artifacts/desktop/*.dmg
+          test -f "$1" && test "$#" -eq 1
+          cp "$1" "artifacts/release/CodexMate-${version}-macOS-${{ matrix.arch }}.dmg"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: CodexMate-macOS-${{ matrix.arch }}
+          path: artifacts/release/*
+          if-no-files-found: error
+          retention-days: 30
+
+  publish-prerelease:
+    name: Publish prerelease assets
+    if: startsWith(github.ref, 'refs/tags/chat-v')
+    needs:
+      - windows-x64
+      - macos
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: CodexMate-*
+          path: release-assets
+          merge-multiple: true
+      - name: Verify package set and create checksums
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME#chat-v}"
+          test -f "release-assets/CodexMate-${version}-Windows-x64.exe"
+          test -f "release-assets/CodexMate-${version}-macOS-arm64.dmg"
+          test -f "release-assets/CodexMate-${version}-macOS-x64.dmg"
+          (cd release-assets && sha256sum CodexMate-* > SHA256SUMS.txt)
+          cat > release-notes.md <<EOF
+          ## CodexMate ${version} alpha
+
+          Tested download packages:
+          - Windows x64 NSIS installer: install, desktop launch, and bundled Codex CLI startup smoke passed.
+          - macOS Apple silicon (arm64) DMG: mount, architecture check, desktop launch, and bundled Codex CLI startup smoke passed on a native runner.
+          - macOS Intel (x64) DMG: mount, architecture check, desktop launch, and bundled Codex CLI startup smoke passed on a native runner.
+
+          Install Git on each computer. Each person signs in with their own Codex account. Two computers also need the same Git remote and a shared, trusted HTTPS relay.
+
+          These alpha packages are not code-signed; the macOS builds are not notarized. Windows or macOS may show an unverified-developer warning. Review the project and package checksums before installing.
+          EOF
+      - name: Create GitHub prerelease
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          version="${GITHUB_REF_NAME#chat-v}"
+          gh release create "$GITHUB_REF_NAME" release-assets/* \
+            --repo "$GITHUB_REPOSITORY" \
+            --verify-tag \
+            --prerelease \
+            --title "CodexMate ${version} alpha" \
+            --notes-file release-notes.md

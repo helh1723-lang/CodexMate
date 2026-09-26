@@ -95,15 +95,27 @@ templates/relay/  Docker + Caddy 部署模板
 
 ---
 
+## 下载桌面版
+
+从 [GitHub Releases](https://github.com/helh1723-lang/CodexMate/releases) 下载 `2.0.0-alpha.3`：
+
+- Windows x64：`CodexMate-2.0.0-alpha.3-Windows-x64.exe`
+- Apple silicon Mac：`CodexMate-2.0.0-alpha.3-macOS-arm64.dmg`
+- Intel Mac：`CodexMate-2.0.0-alpha.3-macOS-x64.dmg`
+
+桌面包包含 Electron 和固定版本 Codex CLI，不需要另装 Node.js。Windows 运行 `.exe` 并按安装向导操作；Mac 打开匹配芯片型号的 `.dmg`，将 CodexMate 拖到“应用程序”。每台电脑仍需安装 Git、登录自己的 Codex 账号，并配置双方共同使用的 Git 远端和 HTTPS 中转。
+
+本 alpha 尚未代码签名，macOS 包也未公证。请先核对 Release 的 SHA-256；Windows SmartScreen 或 macOS Gatekeeper 仍可能拦截。Mac 首次尝试打开后，如确认下载来源和校验值可信，可在“系统设置 → 隐私与安全性”中使用“仍要打开”。详见 [Apple 官方说明](https://support.apple.com/zh-cn/102445)。
+
 ## 完成度
 
-**不要看版本号判断进度。** 当前 `2.0.0-alpha.2` 的真实状态见 [`docs/acceptance.md`](docs/acceptance.md)。
+不要只看版本号判断交付状态；请以 [`docs/acceptance.md`](docs/acceptance.md) 的实测记录和未验收清单为准。
 
-2026-09-25 复查已修复桌面启动、停止竞态、上下文同步和过期审查等问题。类型检查、23 项测试、构建通过；真实 Electron 窗口与本机登录检测通过。跨账号跨设备完整协作、macOS 实机及异地 TLS 部署仍需验收，不能以本机测试代替。
+Windows x64 安装包会在原生 Windows runner 上完成安装、启动和捆绑 Codex CLI 检查；macOS arm64 与 x64 包会分别在原生 Apple silicon 和 Intel runner 上挂载、检查架构并启动验证。两账号跨设备完整协作、实际用户 Mac 安装体验及异地 TLS 部署仍需继续验收。
 
 技术架构见 [docs/architecture.md](docs/architecture.md)，部署打包见 [docs/operations.md](docs/operations.md)，进度见 [docs/progress.md](docs/progress.md)，接续开发见 [HANDOFF.md](HANDOFF.md)。
 
-当前 `2.0.0-alpha.2` 的改造在 `codex/minimal-agent-chat` 分支上，通过 draft PR 审查，完成后才合并 `main`。上一版 v1.1 工作台保留在标签 `pre-chat-redesign-20260924`。
+`2.0.0-alpha.3` 从 `codex/minimal-agent-chat` 独立分支构建，尚未合并到 `main`。上一版 v1.1 工作台保留在标签 `pre-chat-redesign-20260924`。
 
 ## 许可
 

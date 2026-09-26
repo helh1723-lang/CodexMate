@@ -1,8 +1,9 @@
 import express from 'express';
 import { createServer } from 'node:http';
 import { randomBytes, timingSafeEqual } from 'node:crypto';
+import { appendFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { resolve } from 'node:path';
+import { join, resolve } from 'node:path';
 import { z } from 'zod';
 import { ChatService } from './service.js';
 import { ChatStore } from './store.js';
@@ -10,6 +11,7 @@ import { redact } from '../core/security.js';
 
 export async function serveChat(home:string,port=0,service=new ChatService(new ChatStore(home))){
   const app=express(),http=createServer(app),token=randomBytes(32).toString('hex');let origin='';
+  if(process.env.CODEXMATE_SMOKE==='1')http.on('request',(req,res)=>{const path=new URL(req.url??'/', 'http://127.0.0.1').pathname;appendFileSync(join(home,'desktop-smoke.log'),`http-request method=${req.method} path=${path}\n`);res.on('finish',()=>appendFileSync(join(home,'desktop-smoke.log'),`http-response status=${res.statusCode}\n`));});
   app.disable('x-powered-by');app.use((req,res,next)=>{
     res.setHeader('Content-Security-Policy',"default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'");
     res.setHeader('X-Content-Type-Options','nosniff');res.setHeader('Referrer-Policy','no-referrer');

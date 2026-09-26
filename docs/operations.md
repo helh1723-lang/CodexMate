@@ -53,7 +53,7 @@ npm run dist:win  # Windows x64 NSIS
 npm run dist:mac  # 在 macOS 上运行，DMG
 ```
 
-输出 `artifacts/desktop/`。CI 位于 `.github/workflows/desktop.yml`，仅手动触发或 chat-v 标签构建。GitHub 更新使用独立改造分支、PR、CHANGELOG 和明确的 alpha 版本；不会自动部署或合并主分支。macOS 按构建机器本机架构产出，避免只安装了一种 Codex 原生依赖却打包两种架构；如需 arm64 和 x64，分别在对应机器安装依赖、构建和测试。
+输出 `artifacts/desktop/`。CI 位于 `.github/workflows/desktop.yml`，会在改造分支推送、手动触发和 `chat-v*` 标签推送时运行。GitHub 更新使用独立改造分支、PR、CHANGELOG 和明确的 alpha 版本；不会自动部署或合并主分支。CI 在原生 Windows x64、Apple silicon 和 Intel runner 分别打包、安装或挂载并启动检查；macOS 本机构建仍按本机架构产出。
 
 当前没有配置 Windows 信任签名和 Apple 公证。安装包生成成功不代表安装、卸载、自动升级或所有平台均验收通过。
 

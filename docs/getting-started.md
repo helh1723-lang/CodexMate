@@ -2,12 +2,20 @@
 
 两个人，两台机器，两个独立 Codex 账号，一个共享 Git 仓库。客户端不需要公网 IP；双方需要共同可达的 HTTPS 中转和 Git 远端。
 
+## 获取客户端
+
+从 [GitHub Releases](https://github.com/helh1723-lang/CodexMate/releases) 下载对应系统的安装包：Windows x64 选择 `.exe`；Apple silicon Mac 选择 `macOS-arm64.dmg`；Intel Mac 选择 `macOS-x64.dmg`。安装包包含 Electron 和 Codex CLI，不需要另外安装 Node.js；每台电脑需要系统 Git。源码运行则需要 Node.js ≥ 22.13。
+
+下载后先对照 Release 的 `SHA256SUMS.txt` 校验安装包。Windows 双击 `.exe`，按向导选择安装位置。Mac 在“关于本机”查看芯片型号，打开对应 DMG，把 CodexMate 拖进“应用程序”，再从“应用程序”启动。
+
+当前 alpha 包尚未代码签名，macOS 包也未公证，系统会显示开发者验证提示。Windows SmartScreen 提示未知发布者时，只在确认来源和校验值后继续。Mac 首次尝试打开后，如 Gatekeeper 阻止启动，可打开“系统设置 → 隐私与安全性”，在安全性区域点击“仍要打开”，再确认弹窗。操作步骤见 [Apple 官方说明](https://support.apple.com/zh-cn/102445)。
+
 ## 前置
 
 | 项 | 要求 |
 |---|---|
-| Node.js | ≥ 22.13 |
-| Codex | 产品已附带固定 CLI；可复用本机登录，或在设置里登录自己的账号 |
+| Node.js | 只在从源码启动时需要，≥ 22.13 |
+| Codex | 安装包附带固定 CLI；在应用设置里登录自己的账号 |
 | Git | 可用，且共享仓库的 `origin` **不含明文凭据**（使用凭据管理器，不在 HTTPS 地址中嵌入账号密码） |
 | 中转服务 | 双方都能连到的一个地址（见下） |
 
