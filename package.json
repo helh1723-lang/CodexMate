@@ -1,33 +1,74 @@
 {
   "name": "codexmate",
-  "version": "1.1.0-rc.1",
-  "description": "Local-first GitHub collaboration for independent Codex accounts",
+  "version": "2.0.0-alpha.3",
+  "description": "Minimal two-agent collaboration chat for independent Codex accounts",
+  "main": "dist/desktop/main.js",
   "license": "MIT",
   "type": "module",
-  "bin": { "codexmate": "dist/cli/index.js" },
-  "files": ["dist", "web-dist", "templates", "docs", "README.md"],
-  "engines": { "node": ">=22.13.0" },
+  "bin": {
+    "codexmate": "dist/chat/cli.js"
+  },
+  "files": [
+    "dist",
+    "web-dist",
+    "templates",
+    "docs",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=22.13.0"
+  },
   "scripts": {
-    "dev": "tsx src/cli/index.ts ui",
-    "start": "node dist/cli/index.js ui",
-    "demo": "tsx src/cli/index.ts demo",
-    "cli": "tsx src/cli/index.ts",
-    "build": "tsc -p tsconfig.build.json && vite build",
+    "dev": "tsx src/chat/cli.ts ui",
+    "start": "node dist/chat/cli.js ui",
+    "desktop": "electron .",
+    "relay": "tsx src/chat/cli.ts relay",
+    "cli": "tsx src/chat/cli.ts",
+    "dist:win": "npm run build && electron-builder --win nsis --x64 --publish never",
+    "dist:mac": "npm run build && electron-builder --mac dmg --publish never",
+    "build": "node scripts/build.mjs",
     "typecheck": "tsc --noEmit",
     "test": "tsx --test tests/*.test.ts",
     "test:ui": "node scripts/test-ui.mjs",
+    "verify:context": "node scripts/verify-context.mjs",
+    "shots:ui": "node scripts/screenshot-ui.mjs",
     "check": "npm run typecheck && npm test && npm run build",
     "prepack": "npm run build"
   },
+  "build": {
+    "appId": "dev.codexmate.chat",
+    "productName": "CodexMate",
+    "directories": {
+      "output": "artifacts/desktop"
+    },
+    "files": [
+      "dist/**/*",
+      "web-dist/**/*",
+      "package.json"
+    ],
+    "asarUnpack": [
+      "node_modules/@openai/**/*"
+    ],
+    "win": {
+      "target": "nsis"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true
+    },
+    "mac": {
+      "category": "public.app-category.developer-tools",
+      "target": "dmg"
+    }
+  },
   "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.26.0",
-    "@openai/codex-sdk": "latest",
+    "@openai/codex-sdk": "0.156.1",
     "@phosphor-icons/react": "^2.1.10",
     "commander": "^13.1.0",
     "express": "^5.1.0",
     "react": "^19.1.0",
     "react-dom": "^19.1.0",
-    "yaml": "^2.8.0",
+    "ws": "8.21.3",
     "zod": "^3.25.0"
   },
   "devDependencies": {
@@ -37,7 +78,10 @@
     "@types/node": "^22.15.0",
     "@types/react": "^19.1.0",
     "@types/react-dom": "^19.1.0",
+    "@types/ws": "8.18.1",
     "@vitejs/plugin-react": "^4.5.0",
+    "electron": "44.4.5",
+    "electron-builder": "26.15.3",
     "tailwindcss": "^4.1.0",
     "tsx": "^4.20.0",
     "typescript": "^5.9.0",

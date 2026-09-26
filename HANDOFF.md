@@ -1,92 +1,60 @@
 # CodexMate 开发交接
 
-最后更新：2026-09-24。当前是开发中的 **1.1.0-rc.1 候选实现**，不是已通过 PRD 所有门槛的正式版本。
+更新：2026-09-25。当前目标是极简双 Agent 协作聊天，当前分支 `codex/minimal-agent-chat`。原 v1.1 检查点为标签 `pre-chat-redesign-20260924`（9986ddb）；本轮尊重用户通过另一 Agent 删除旧版的决定，不恢复旧工作台。
 
-**判断完成度请看 [`docs/acceptance.md`](docs/acceptance.md)，不要只看版本号。** 该文档逐条列出「已实测 / 部分覆盖 / 未验证」。
+## 可以独立接续的入口
 
-## 目标与授权边界
+1. `npm ci`，然后 `npm run check`。
+2. `npm run desktop` 打开桌面；或 `npm start` 打开本机浏览器服务。
+3. 中转本机测试：`npm run relay -- --home .local/relay --port 8787`。
+4. 双方配置真实同一 Git 远端、各自登录、创建/加入房间并各自授权。
+5. 异地部署、打包和诊断命令见 [docs/operations.md](docs/operations.md)。
 
-- 实现 `CodexMate_Full_PRD.md` 中到 v1.1 为止的累计产品能力。
-- 用户暂时没有用于联调的 GitHub 仓库和两位协作者；演练数据不能当作真实双机验证。
-- 用户要求保留交接，能够独立运行、验证、接续开发。
-- 不共享账号或额度；不迁移跨机原线程；不自动合并或部署；远端内容不能授予本机执行权限。
+## 本轮做了什么
 
-## 当前代码
+当前更新版本 `2.0.0-alpha.2`，版本变更见 [CHANGELOG.md](CHANGELOG.md)。原始日志、验证报告和本机路径通过 `.gitignore` 排除，GitHub 仅发布脱敏验证摘要和已检查的界面截图。
 
-- TypeScript / Node 22、React / Vite、SQLite 项目基础，依赖已安装。
-- `src/core`：任务、运行、审批、交接、审查、规划、策略、诊断，共享 Service。
-- `src/store`：SQLite WAL、事务、事件去重、审计与本机写锁。
-- `src/adapters`：真实 gh REST、Git worktree、扫描与提交、Codex SDK 结构化修改建议。
-- `src/server`：127.0.0.1 API、Host/Origin/token 检查、共享审批入口。
-- `src/web`：中文总览、任务看板、依赖图、审查、交接、规划、质量、审批与设置。
-- `src/cli` / `src/mcp`：CLI 与 stdio MCP；MCP 只提出写请求，不提供批准工具。
-- `src/scheduler`：SQLite 事务 lease/fencing；过期不自动接管，需旧持有人确认停止。
-- `src/operations`：声明式适配器、Ed25519 发布签名。
-- 演练种子数据使用独立数据库，不调用真实 Codex 或 GitHub。
-- `README.md` + `docs/`（architecture / protocol / security / operations / acceptance）已补齐，并被 `package.json#files` 收录。
+复查最新代码，修复了 Electron 启动卡死、手动上下文 payload、上下文积压预算、历史分页、停止竞态、停止后权限请求、脏工作树审查、补充要求后的过期审查，以及 WebSocket 超大消息和重复连接问题。新增回归测试。完整修复记录见 [docs/progress.md](docs/progress.md)。
 
-## 本轮改动（2026-09-24）
+`npm run check` 当前通过 23 项测试。真实 Electron 能打开窗口并识别本机 ChatGPT 登录。完整证据、剩余限制以 [docs/acceptance.md](docs/acceptance.md) 为准，不以版本号判断完成。
 
-| 变更 | 说明 |
-|---|---|
-| **修复** `release sign` 参数冲突 | 子命令的 `--version` 会被根命令全局 `-V/--version` 抢占，导致只打印版本号就退出、**签名清单从未写出**。改为 `--release-version`；`--out` 命中已存在文件时抛 `MANIFEST_EXISTS` 而不是裸 `EEXIST`。 |
-| 修复 `stageRelease` 签名类型 | 与 `verifyRelease` 统一为 `string \| KeyObject`。 |
-| 可测试性改造 | `GitHub` 增加可注入执行器（`constructor(slug, run = exec)`）并导出 `GitHubLike`；`Service` 增加可注入 GitHub 工厂。生产路径不变，测试可在**进程边界**替换 `gh`。 |
-| 协调器状态码 | 鉴权失败 401、越权/缺 fence 403、租约冲突仍 409（此前统一 409，运维无法区分配置错误与并发争抢）。 |
-| 新增测试 | `tests/github.test.ts`(10)、`tests/sync.test.ts`(6)、`tests/release.test.ts`(4)、`tests/coordinator.test.ts`(1)、共用工具 `tests/helpers.ts`。测试总数 23 → **44**。 |
-| 新增文档 | `README.md`、`docs/*.md`（此前 `package.json#files` 引用了不存在的 `README.md` 与 `docs`，`npm pack` 一直静默丢弃）。 |
+## 已推送状态
 
-## 检查点状态
+- 提交 `c2b6844`，81 个文件（+1996 / -3543），分支 `codex/minimal-agent-chat`，已推送到 `origin`。
+- `main` 未改动，仍为 9986ddb；旧版状态由标签 `pre-chat-redesign-20260924`（9986ddb）追溯，标签已推送。
+- PR #1（draft）：<https://github.com/helh1723-lang/CodexMate/pull/1>。保持 draft，双人双机实测完成前不合并主分支。
+- 上传前已扫过凭据特征、明文 URL 账号密码、本机路径与账号标识；未发现残留。`.workbuddy/memory/`、`artifacts/desktop/`、`dist/`、`web-dist/`、`.local/` 均不入库。
 
-全量复验（2026-09-24）结果：
+### Git 引用或目录操作失败
 
-```
-npm run typecheck   ✅ 0 错误
-npm test            ✅ 44 / 44 通过（≈20s）
-npm run build       ✅ tsc + vite（4570 modules）
-npm run test:ui     ✅ 2 / 2 通过
-npm pack --dry-run  ✅ 52 files，含 README 与 docs
+不要直接编辑 `.git/refs/*`，也不要把一次权限或文件锁错误当作 Git 的通用限制。先用只读诊断确认当前仓库路径、引用与锁状态：
+
+```sh
+git rev-parse --show-toplevel
+git rev-parse --git-dir
+git status --short --branch
+git show-ref --heads
+git reflog --all --date=iso
+git fsck --no-reflogs --unreachable
 ```
 
-本机环境实测：Node v22.22.2、Git 2.55.0、gh 2.96.0（已登录，`repo` 权限）、codex-cli 0.156.1（ChatGPT 登录）。`codexmate doctor` 6 项全通过。
+确认具体原因后再通过 Git 的引用更新命令修复；保留原引用和日志，不能用手工覆盖 refs 绕过锁或权限问题。宿主 Git 的 hook guard 位于任务工作树之外；若 guard 路径无效或不为空，应修复宿主数据目录本身，不能把它改回工作树内路径。
 
-**仍不能声称完整产品通过验收**：真实 GitHub 仓库交互、真实 Codex 执行、跨网络双人 E2E、跨设备故障注入、跨平台安装均未验证。详见 `docs/acceptance.md` 第 3–6 节。
+## 仍需做的事
 
-## 自主操作
+- 找第二个账号和实际设备，通过真实 HTTPS 中转完成一次从目标到双方实际修改、互动消息、精确 SHA 整合和审查的完整任务。
+- 按 Windows↔Windows、macOS↔macOS、Windows↔macOS 分别记录；模拟 Agent 不替代这些测试。
+- 在 macOS 构建并运行原生包，确认包含正确架构 Codex 可执行文件；配置发行签名/公证属于后续发布工作。
+- 补做跨机故障矩阵：运行中断网、对端离线停止、进程退出、权限拒绝、冲突/两轮失败、长会话。
+- Docker 模板尚需真实服务器启动和 TLS 验证。没有默认公共中转。
 
-```powershell
-Set-Location 'E:\vibe coding\codexmate'
-npm ci
-npm run typecheck
-npm test
-npm run build
-npm run test:ui
-npm run demo
-```
+## 开发注意
 
-浏览器打开 `http://127.0.0.1:4317`。若构建失败，先依据错误修复。
-真实空工作台：`npm start`（先 build）；诊断：`npm run cli -- doctor`。
-演练状态在 `.local/demo/`；真实 CLI 默认使用本人 `~/.codexmate/`，可用 `--home` 指定。
-不要把演练 home 用于真实仓库；不要提交数据库、认证文件或真实日志。
-
-> Windows 提示：Bash 工具默认 PATH 缺少 coreutils，需要先
-> `export PATH="/c/Users/Administrator/.workbuddy/binaries/PortableGit/versions/1.2.0/usr/bin:$PATH"`；
-> PowerShell 工具在该机器上常返回空 stdout，建议把输出重定向到文件再读。
-
-## 接续顺序
-
-1. 读取本文件和 `docs/acceptance.md`，不要只凭版本号宣布完成。
-2. 运行 typecheck/test/build/test:ui，修复失败项，再扩展功能。
-3. 真实仓库可用后，两个不同用户、不同网络完成 Issue → worktree → SDK → PR → review 和 checkpoint 接力（T01/T03/T04/T06/T09）。
-4. 多人协调、签名分发未验证时保持禁用；租约单元测试不等同跨设备无双写保证。
-5. 可选：补 `LICENSE`、初始化 Git 仓库（当前工作区不是 Git 仓库，`docs/` 与 `README.md` 尚未纳入版本控制）。
-
-## 注意事项
-
-- **子命令不要使用 `--version`**：会被根命令的全局 `-V/--version` 抢占并直接退出，静默不执行。新增 CLI 参数时留意同名冲突。
-- GitHub assignee/正文不是原子锁，不能承诺默认模式多机 exactly-once。
-- Runner 只读生成变更，主机校验路径/哈希再写入。SDK 用户配置/MCP 继承须审查，不能仅靠提示词声称安全。
-- 审批绑定内容、版本、策略；过期、重复、远端变化均需阻止。
-- 日志/导出/发布扫描或脱敏；二进制、符号链接、敏感路径保留人工处理入口。
-- 未运行测试显示「未运行」；真实额度显示「未知」。
-- 测试中的离线执行器只替换 `gh` 进程，**不替换被测代码**；新增适配器逻辑应沿用这一注入方式，不要退化成 mock 替身。
+- 新数据 `<home>/chat/codexmate.db`，旧库保留。保留所有 worktree，不能为恢复而覆盖用户原工作区。
+- Git 与 SQLite 不能原子提交；未知动作必须对账，不能承诺全局 exactly-once。
+- 修改上下文预算时同步更新 `context.ts` 注释、协议和回归测试。
+- Codex 固定 0.156.1；动态工具属于实验协议。升级前重新核对官方类型并跑实际 smoke。
+- 模型本机凭据和线程留在各自设备；中转可见消息正文，不能宣传端到端加密。
+- 验证桌面程序前先清掉 `ELECTRON_RUN_AS_NODE`。某些代理式终端会注入该变量，Electron 会退化成纯 Node 运行，现象是应用秒退、退出码 0、连 userData 都不建，日志为 `SyntaxError: The requested module 'electron' does not provide an export named 'BrowserWindow'`。这是环境问题，不是产品缺陷；`scripts/smoke-desktop.mjs` 已自行清理该变量。
+- 本次更新在 `codex/minimal-agent-chat` 分支统一管理，版本 `2.0.0-alpha.2`；包含上一位 Agent 删除旧版的工作，不要盲目 restore/reset。主分支合并需结合 PR 和未完成验收决定。
+- 额度重置、代理端口属于会变化的本机状态。不要把旧交接中的时间/端口当成当前事实，也不要运行仓库内不存在的修复脚本。
