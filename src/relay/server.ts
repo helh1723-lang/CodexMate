@@ -78,5 +78,5 @@ export function createRelay(home:string){
     }catch(e){ws.send(JSON.stringify({type:'error',id:data?.event?.id,message:e instanceof Error?e.message:'协议错误'}));if(!identity)ws.close(1008);}});
     ws.on('close',()=>{clearTimeout(authTimer);clearInterval(heartbeat);if(identity&&sockets.get(identity.member)===ws){sockets.delete(identity.member);presence(db.get<RelayRoom>('room',identity.room)!);}});
   });
-  return {app,http,db,close:()=>new Promise<void>(resolve=>{for(const ws of wss.clients)ws.terminate();wss.close();http.close(()=>{db.close();resolve();});})};
+  return {app,http,db,close:()=>new Promise<void>(resolve=>{const clients=[...wss.clients],closed=Promise.all(clients.map(ws=>new Promise<void>(done=>{if(ws.readyState===WebSocket.CLOSED)return done();ws.once('close',()=>done());})));for(const ws of clients)ws.terminate();void closed.then(()=>wss.close(()=>http.close(()=>{db.close();resolve();})));})};
 }
