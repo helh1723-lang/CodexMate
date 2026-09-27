@@ -3,8 +3,6 @@ name: Desktop packages
 on:
   workflow_dispatch:
   push:
-    branches:
-      - codex/minimal-agent-chat
     tags:
       - 'chat-v*'
 
@@ -105,6 +103,7 @@ jobs:
     permissions:
       contents: write
     steps:
+      - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
         with:
           pattern: CodexMate-*
@@ -119,18 +118,8 @@ jobs:
           test -f "release-assets/CodexMate-${version}-macOS-arm64.dmg"
           test -f "release-assets/CodexMate-${version}-macOS-x64.dmg"
           (cd release-assets && sha256sum CodexMate-* > SHA256SUMS.txt)
-          cat > release-notes.md <<EOF
-          ## CodexMate ${version} alpha
-
-          Tested download packages:
-          - Windows x64 NSIS installer: install, desktop launch, and bundled Codex CLI startup smoke passed.
-          - macOS Apple silicon (arm64) DMG: mount, architecture check, desktop launch, and bundled Codex CLI startup smoke passed on a native runner.
-          - macOS Intel (x64) DMG: mount, architecture check, desktop launch, and bundled Codex CLI startup smoke passed on a native runner.
-
-          Install Git on each computer. Each person signs in with their own Codex account. Two computers also need the same Git remote and a shared, trusted HTTPS relay.
-
-          These alpha packages are not code-signed; the macOS builds are not notarized. Windows or macOS may show an unverified-developer warning. Review the project and package checksums before installing.
-          EOF
+          test "$(node -p "require('./package.json').version")" = "$version"
+          cp "docs/release-${version}.md" release-notes.md
       - name: Create GitHub prerelease
         env:
           GH_TOKEN: ${{ github.token }}

@@ -44,7 +44,7 @@ npm run desktop        # 打开桌面端
 
 **发起方选择已有共享仓库并创建房间；协作方加入房间后选择本地工作目录，应用自动克隆、准备 Git 和授权协作。** 私有仓库使用各自机器的 Git 凭据。非空目录会使用独立子目录，已有文件保留。
 
-输入框左下角可选择本机 Codex 模型与思考强度，下一轮生效。中断按钮暂停双方执行，再发消息会沿原会话和工作树继续。此功能需要双方客户端和中转均升级至当前源码版本（中转协议 2）；尚未发布新安装包。
+输入框左下角可选择本机 Codex 模型与思考强度，下一轮生效。中断按钮暂停双方执行，再发消息会沿原会话和工作树继续。此功能需要双方客户端和中转均升级至当前源码版本（中转协议 2）。
 
 详细的逐步说明见 [`docs/getting-started.md`](docs/getting-started.md)。
 
@@ -99,11 +99,11 @@ templates/relay/  Docker + Caddy 部署模板
 
 ## 下载桌面版
 
-从 [GitHub Releases](https://github.com/helh1723-lang/CodexMate/releases) 下载 `2.0.0-alpha.3`：
+从 [GitHub Releases](https://github.com/helh1723-lang/CodexMate/releases) 下载 `2.0.0-alpha.4`：
 
-- Windows x64：`CodexMate-2.0.0-alpha.3-Windows-x64.exe`
-- Apple silicon Mac：`CodexMate-2.0.0-alpha.3-macOS-arm64.dmg`
-- Intel Mac：`CodexMate-2.0.0-alpha.3-macOS-x64.dmg`
+- Windows x64：`CodexMate-2.0.0-alpha.4-Windows-x64.exe`
+- Apple silicon Mac：`CodexMate-2.0.0-alpha.4-macOS-arm64.dmg`
+- Intel Mac：`CodexMate-2.0.0-alpha.4-macOS-x64.dmg`
 
 桌面包包含 Electron 和固定版本 Codex CLI，不需要另装 Node.js。Windows 运行 `.exe` 并按安装向导操作；Mac 打开匹配芯片型号的 `.dmg`，将 CodexMate 拖到“应用程序”。每台电脑仍需安装 Git、登录自己的 Codex 账号，并配置双方共同使用的 Git 远端和 HTTPS 中转。
 
@@ -117,7 +117,7 @@ Windows x64 安装包会在原生 Windows runner 上完成安装、启动和捆�
 
 技术架构见 [docs/architecture.md](docs/architecture.md)，部署打包见 [docs/operations.md](docs/operations.md)，进度见 [docs/progress.md](docs/progress.md)，接续开发见 [HANDOFF.md](HANDOFF.md)。
 
-`2.0.0-alpha.3` 从 `codex/minimal-agent-chat` 独立分支构建，尚未合并到 `main`。上一版 v1.1 工作台保留在标签 `pre-chat-redesign-20260924`。
+`2.0.0-alpha.4` 从 `main` 发布，版本标签为 `chat-v2.0.0-alpha.4`。上一版 v1.1 工作台保留在标签 `pre-chat-redesign-20260924`。
 
 ## 许可
 
