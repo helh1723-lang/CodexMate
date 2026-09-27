@@ -1,0 +1,11 @@
+{
+  "version": "2.0.0-alpha.2",
+  "date": "2026-09-25",
+  "automatedTests": {"passed": 23, "failed": 0},
+  "browserTests": {"passed": 2, "browser": "Microsoft Edge", "platform": "Windows"},
+  "desktop": {"window": true, "accountDetection": true, "contextIsolation": true, "nodeIntegration": false, "sandbox": true},
+  "contextRecall": {"realCodex": true, "separateDirectories": true, "receiverCommands": 0, "passed": true},
+  "gitIntegration": {"realGit": true, "simulatedAgents": true, "passed": true},
+  "notVerified": ["two independent accounts end-to-end", "Windows to Windows across devices", "macOS to macOS", "Windows to macOS", "macOS installer", "public HTTPS relay deployment"],
+  "privacy": "Raw reports, local paths, account identifiers and logs are excluded from publication."
+}

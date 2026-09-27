@@ -8,6 +8,13 @@ web-dist/
 *.db-shm
 *.db-wal
 *.tgz
+artifacts/desktop/
+# Raw verification reports can contain local paths and account/environment details.
+artifacts/*
+!artifacts/chat-light.png
+!artifacts/chat-dark.png
+!artifacts/chat-mobile.png
+!artifacts/verification-summary.json
 test-results/
 playwright-report/
 # 本机 AI 工作笔记：含本机路径、账号等环境信息，不随协作仓库分发

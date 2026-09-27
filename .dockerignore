@@ -1,0 +1,10 @@
+node_modules
+.git
+.local
+.cache
+.workbuddy
+artifacts
+test-results
+dist
+web-dist
+.env

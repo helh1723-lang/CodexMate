@@ -1,8 +1,0 @@
-{
-  "leaseSeconds": 90,
-  "principals": [{
-    "tokenSha256": "0000000000000000000000000000000000000000000000000000000000000000",
-    "worker": "replace-with-worker-device-id",
-    "repositories": ["your-org/your-repository"]
-  }]
-}

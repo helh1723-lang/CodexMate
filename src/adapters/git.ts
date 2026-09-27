@@ -1,9 +1,37 @@
 import { checked, exec } from './process.js';
-import { mkdir, lstat, readFile, realpath, writeFile } from 'node:fs/promises';
-import { join, resolve, relative, isAbsolute, dirname } from 'node:path';
+import { chmod, mkdir, lstat, readFile, readdir, realpath, writeFile } from 'node:fs/promises';
+import { homedir } from 'node:os';
+import { join, resolve, relative, isAbsolute, dirname, sep } from 'node:path';
 import { assert, AppError } from '../core/model.js';
 import { scanText, digest } from '../core/security.js';
-export const git = (cwd:string,args:string[]) => checked('git',['-c','core.hooksPath='+join(cwd,'.codexmate-disabled-hooks'),'-c','core.fsmonitor=false','-c','diff.external=','--no-pager',...args],{cwd});
+const hostHooksDirectory=()=>join(resolve(process.env.CODEXMATE_HOME??join(homedir(),'.codexmate')),'disabled-git-hooks');
+const contained=(root:string,path:string)=>{const rel=relative(resolve(root),resolve(path));return rel===''||(!isAbsolute(rel)&&rel!=='..'&&!rel.startsWith('..'+sep));};
+async function protectedHooksPath(cwd:string){
+  // Bootstrap only uses read-only rev-parse commands with the intended hook path.
+  // It lets us prove the host-owned directory is outside the actual worktree/gitdir
+  // before creating or using it, including when the user opened Git at a subfolder.
+  const directory=hostHooksDirectory(),config=['-c','core.hooksPath='+directory];
+  const probe=await exec('git',[...config,'rev-parse','--is-bare-repository'],{cwd});
+  const bare=probe.code===0?probe.stdout.trim():undefined;
+  const repositoryRoot=bare===undefined?await realpath(cwd):await checked('git',[...config,'rev-parse',bare==='true'?'--absolute-git-dir':'--show-toplevel'],{cwd});
+  let actual:string;
+  try{actual=await realpath(directory);}catch(e:any){if(e.code!=='ENOENT')throw e;actual=resolve(directory);}
+  assert(!contained(repositoryRoot,actual),'HOOKS_PATH','Git hook guard must remain outside the repository.');
+  await mkdir(directory,{recursive:true,mode:0o700});
+  let stat=await lstat(directory);assert(stat.isDirectory()&&!stat.isSymbolicLink(),'HOOKS_PATH','Git hook guard must be a host-owned directory.');await chmod(directory,0o700);stat=await lstat(directory);if(process.platform!=='win32')assert((stat.mode&0o077)===0,'HOOKS_PATH','Git hook guard permissions are not private.');
+  actual=await realpath(directory);
+  assert(!contained(repositoryRoot,actual),'HOOKS_PATH','Git hook guard must remain outside the repository.');
+  assert((await readdir(actual)).length===0,'HOOKS_PATH','Git hook guard directory is not empty; refusing host Git operation.');
+  return actual;
+}
+export const git = async (cwd:string,args:string[]) => {
+  const hooks=await protectedHooksPath(cwd);
+  return checked('git',['-c','core.hooksPath='+hooks,'-c','core.fsmonitor=false','-c','diff.external=','--no-pager',...args],{cwd});
+};
+export async function hostGitEnvironment(cwd:string):Promise<NodeJS.ProcessEnv>{
+  const hooks=await protectedHooksPath(cwd);
+  return {...process.env,GIT_CONFIG_COUNT:'1',GIT_CONFIG_KEY_0:'core.hooksPath',GIT_CONFIG_VALUE_0:hooks};
+}
 export const sensitivePath = (p:string) => /(^|\/)(\.env(?:\..*)?|auth\.json|credentials(?:\..*)?|id_rsa|id_ed25519|\.npmrc|\.git|\.codex|\.codexmate|node_modules)(\/|$)|\.(?:pem|key|p12|pfx)$/i.test(p.replaceAll('\\','/'));
 export async function safePath(root:string,path:string) {
   assert(path&&!path.includes('\0')&&!isAbsolute(path)&&!path.includes(':'),'UNSAFE_PATH','不允许绝对路径或特殊路径。');
