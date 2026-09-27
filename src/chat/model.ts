@@ -1,11 +1,15 @@
 import { z } from 'zod';
 export const wireSchema = z.object({
   id:z.string().uuid(), room:z.string().uuid(), task:z.string().uuid(), sender:z.string().uuid(),
-  type:z.enum(['start','message','result','review','reviewed','complete','cancel','supplement','context']),
+  type:z.enum(['start','message','result','review','reviewed','complete','cancel','supplement','context','pause','resume']),
   correlation:z.string().uuid().optional(), payload:z.record(z.unknown()), at:z.number(),
 });
 export type Wire = z.infer<typeof wireSchema>;
-export type Room = {url:string;id:string;member:string;token:string;invite?:string;peer?:string;online?:boolean};
+export const workspaceSchema=z.object({remote:z.string().max(2048).optional(),ready:z.boolean(),status:z.string().max(1000)});
+export type WorkspaceStatus=z.infer<typeof workspaceSchema>;
+export type ModelOption={id:string;model:string;displayName:string;description:string;isDefault:boolean;defaultReasoningEffort:string;supportedReasoningEfforts:{reasoningEffort:string;description:string}[]};
+export type ModelSelection={model:string;effort:string};
+export type Room = {url:string;id:string;member:string;token:string;invite?:string;peer?:string;online?:boolean;peerWorkspace?:WorkspaceStatus};
 export type Project = {path:string;remote:string;name:string;checks:string[][];grant?:{room:string;peer:string}};
 export type Check = {command:string[];code:number;output:string};
 export type Result = {sha:string;branch:string;summary:string;checks:Check[];requirements?:string[]};

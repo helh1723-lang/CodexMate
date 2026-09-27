@@ -16,7 +16,7 @@
 
 | 方法 | 路径 | 说明 |
 |---|---|---|
-| `GET` | `/health` | 返回 `{ok, protocol}`，`protocol` 当前为 `1` |
+| `GET` | `/health` | 返回 `{ok, protocol}`，`protocol` 当前为 `2` |
 | `POST` | `/rooms` | 创建房间，返回 `{id, member, token, invite}` |
 | `POST` | `/join` | 用邀请码加入，返回 `{id, member, token}` |
 
@@ -38,7 +38,8 @@
 |---|---|---|
 | `auth` | `{room, member, token}` | 认证（超时即断开） |
 | `event` | `{event}` | 发送一条线路事件，须符合线路 schema |
-| `ack` | `{id}` | 确认已收到某条事件 |
+| `ack` | `{id}` | 确认已收到某条事件（本机持久入队，不代表 Agent 执行完成） |
+| `workspace` | `{workspace: {remote?, ready, status}}` | 认证后上报仓库地址与就绪状态，持久化并随 presence 发送；不包含本地工作目录或凭据 |
 
 服务端 → 客户端：
 
@@ -47,7 +48,7 @@
 | `ready` | — | 认证通过 |
 | `batch` | `{cancelled, events}` | 投递待办事件；**取消标记永远排在前面** |
 | `accepted` | `{id}` | 事件已被接受持久化 |
-| `presence` | `{members}` | 成员上下线 |
+| `presence` | `{members}` | 成员上下线及 workspace 就绪状态 |
 | `error` | `{id?, message}` | 拒绝或错误 |
 
 要点：
@@ -93,8 +94,12 @@ type WireType =
   | 'review'       // 请求集成审查
   | 'reviewed'     // 审查结论
   | 'complete'     // 全部完成
-  | 'cancel';      // 停止
+  | 'pause'        // 中断，保留线程、工作树与活动任务
+  | 'resume'       // 同任务继续
+  | 'cancel';      // 永久结束
 ```
+
+模型目录由本机 App Server 的 `model/list` 分页读取；选择保存在本机，下一次 `turn/start` 传入 `model` 与 `effort`。运行中的轮次保持原模型。模型设置不经过中转。
 
 ## 任务阶段
 
@@ -104,7 +109,7 @@ working ──双方均提交──▶ integrating ──▶ reviewing ──通
    └──────────── 修正（最多两轮）──────────────┘
 ```
 
-异常时进入 `paused`（带原因），可对账后继续；`cancelled` 是终态，不能恢复，需新建任务。
+用户中断或异常时进入 `paused`（带原因），可对账后继续；`cancelled` 是终态，不能恢复，需新建任务。
 
 `submit_result` 和 `submit_review` 保存调用它们的 Codex `turnId`。只有对应轮次成功结束，宿主才执行检查、提交或审查。轮次失败、中断、进程重启或宿主提交过程结果不明时，请求转入对账状态；恢复时先检查持久事件、工作树 HEAD 与远端 SHA，不会直接重放旧提交。两轮审查拒绝后暂停时，继续操作进入发起方整合修复阶段，并开启新一轮两次修复计数。
 

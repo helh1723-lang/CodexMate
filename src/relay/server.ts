@@ -3,8 +3,8 @@ import { createServer } from 'node:http';
 import { WebSocketServer, WebSocket } from 'ws';
 import { randomBytes, randomUUID, createHash, timingSafeEqual } from 'node:crypto';
 import { Store } from '../store/index.js';
-import { wireSchema, type Wire } from '../chat/model.js';
-type Member={id:string;hash:string};
+import { wireSchema, workspaceSchema, type WorkspaceStatus, type Wire } from '../chat/model.js';
+type Member={id:string;hash:string;workspace?:WorkspaceStatus};
 type RelayRoom={id:string;inviteHash:string;expires:number;members:Member[];active?:string;cancelled:string[]};
 const hash=(s:string)=>createHash('sha256').update(s).digest('hex');
 const equal=(a:string,b:string)=>a.length===b.length&&timingSafeEqual(Buffer.from(a),Buffer.from(b));
@@ -14,7 +14,7 @@ export function createRelay(home:string){
   const limits=new Map<string,{count:number;until:number}>();
   app.disable('x-powered-by');app.use(express.json({limit:'8kb'}));
   app.use((req,res,next)=>{const key=req.socket.remoteAddress??'?';const now=Date.now();let v=limits.get(key);if(!v||v.until<now){v={count:0,until:now+60000};limits.set(key,v);}if(++v.count>60)return void res.status(429).json({error:'请求过于频繁'});next();});
-  app.get('/health',(_req,res)=>res.json({ok:true,protocol:1}));
+  app.get('/health',(_req,res)=>res.json({ok:true,protocol:2}));
   app.post('/rooms',(_req,res)=>{
     const id=randomUUID(),member=randomUUID(),token=randomBytes(32).toString('hex'),invite=randomBytes(12).toString('hex');
     db.put<RelayRoom>('room',id,{id,inviteHash:hash(invite),expires:Date.now()+86400000,members:[{id:member,hash:hash(token)}],cancelled:[]});
@@ -27,7 +27,7 @@ export function createRelay(home:string){
     const member=randomUUID(),token=randomBytes(32).toString('hex');room.members.push({id:member,hash:hash(token)});room.expires=0;db.put('room',room.id,room);
     res.json({id:room.id,member,token});
   });
-  const presence=(room:RelayRoom)=>{for(const m of room.members)sockets.get(m.id)?.send(JSON.stringify({type:'presence',members:room.members.map(p=>({id:p.id,online:sockets.get(p.id)?.readyState===WebSocket.OPEN}))}));};
+  const presence=(room:RelayRoom)=>{for(const m of room.members)sockets.get(m.id)?.send(JSON.stringify({type:'presence',members:room.members.map(p=>({id:p.id,online:sockets.get(p.id)?.readyState===WebSocket.OPEN,workspace:p.workspace}))}));};
   const sync=(ws:WebSocket,room:RelayRoom,member:string)=>{
     const pending=db.list<Wire>('event').filter(e=>e.room===room.id&&e.sender!==member&&!db.get('ack',`${member}:${e.id}`));
     // Cancellation tombstones always precede any replayed work, including after a long offline interval.
@@ -51,6 +51,7 @@ export function createRelay(home:string){
       }
       const room=db.get<RelayRoom>('room',identity.room)!;
       if(sockets.get(identity.member)!==ws)throw new Error('此连接已被新的本机连接替换');
+      if(data.type==='workspace'){const member=room.members.find(m=>m.id===identity!.member)!;member.workspace=workspaceSchema.parse(data.workspace);db.put('room',room.id,room);presence(room);return;}
       if(data.type==='ack'){if(typeof data.id!=='string')throw new Error('无效确认');const e=db.get<Wire>('event',data.id);if(e?.room===room.id&&e.sender!==identity.member)db.put('ack',`${identity.member}:${data.id}`,true);return;}
       if(data.type!=='event')throw new Error('未知消息');
       const event=wireSchema.parse(data.event);

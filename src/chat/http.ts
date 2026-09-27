@@ -25,13 +25,16 @@ export async function serveChat(home:string,port=0,service=new ChatService(new C
   app.post('/api/action',async(req,res,next)=>{try{
     const {action,input}=z.object({action:z.string(),input:z.record(z.unknown()).default({})}).parse(req.body);let result:unknown;
     if(action==='account')result=await service.account();
+    else if(action==='models')result=await service.models();
+    else if(action==='model')result=await service.selectModel(z.object({model:z.string().min(1),effort:z.string().min(1)}).parse(input));
     else if(action==='login')result=await service.login();
-    else if(action==='project'){const p=z.object({path:z.string().min(1),checks:z.array(z.array(z.string().min(1)).min(1)).max(10)}).parse(input);result=await service.configure(p.path,p.checks);}
+    else if(action==='project'){const p=z.object({path:z.string().min(1),checks:z.array(z.array(z.string().min(1)).min(1)).max(10),authorize:z.boolean().default(false)}).parse(input);result=await service.configure(p.path,p.checks,p.authorize);}
     else if(action==='pair'){const p=z.object({url:z.string(),invite:z.string().optional()}).parse(input);result=await service.pair(p.url,p.invite);}
     else if(action==='grant')result=service.grant();
     else if(action==='start')result=await service.start(z.string().min(1).max(20000).parse(input.text));
     else if(action==='supplement')result=await service.supplement(z.string().uuid().parse(input.id),z.string().min(1).max(20000).parse(input.text));
     else if(action==='stop')result=await service.stop(z.string().uuid().parse(input.id));
+    else if(action==='interrupt')result=await service.interrupt(z.string().uuid().parse(input.id));
     else if(action==='resume')result=await service.resume(z.string().uuid().parse(input.id));
     else if(action==='decide')result=service.decide(z.string().uuid().parse(input.id),z.boolean().parse(input.allow),z.record(z.object({answers:z.array(z.string())})).optional().parse(input.answers));
     else if(action==='context')result=await service.syncContext(z.string().uuid().parse(input.id));

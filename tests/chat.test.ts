@@ -11,6 +11,7 @@ import { ChatService } from '../src/chat/service.js';
 import { AppServer } from '../src/chat/app-server.js';
 import { RelayClient,relayUrl } from '../src/chat/relay-client.js';
 import { git } from '../src/adapters/git.js';
+import { prepareRepository, shareableRemote } from '../src/chat/repository.js';
 import type { Task,Room,Wire } from '../src/chat/model.js';
 import { itemsToEntries, fit, rowsAfter, formatPeerContext, buildBundle, contextBundleSchema, SYNC_BUDGET_AUTO, INJECT_BUDGET, RECENT_KEEP } from '../src/chat/context.js';
 process.env.CODEXMATE_HOME=join(tmpdir(),'codexmate-chat-test-host-'+process.pid);
@@ -66,11 +67,17 @@ class FakeCodex extends EventEmitter{
 test('two isolated clients exchange actionable messages, commit and integrate real Git changes', {timeout:240000},async()=>{
   const relay=await relayFixture(),remote=join(relay.home,'remote.git'),seed=join(relay.home,'seed');await mkdir(seed);
   await git(relay.home,['init','--bare',remote]);await git(seed,['init','-b','main']);await git(seed,['config','user.name','Test']);await git(seed,['config','user.email','test@localhost']);await writeFile(join(seed,'README.md'),'test');await git(seed,['add','.']);await git(seed,['commit','-m','base']);await git(seed,['remote','add','origin',remote]);await git(seed,['push','-u','origin','main']);await git(remote,['symbolic-ref','HEAD','refs/heads/main']);
-  const aPath=join(relay.home,'repo-a'),bPath=join(relay.home,'repo-b');await git(relay.home,['clone',remote,aPath]);await git(relay.home,['clone',remote,bPath]);
-  for(const p of [aPath,bPath]){await git(p,['config','user.name','Test']);await git(p,['config','user.email','test@localhost']);}
+  const aPath=join(relay.home,'repo-a'),bPath=join(relay.home,'repo-b');await git(relay.home,['clone',remote,aPath]);await mkdir(bPath);await writeFile(join(bPath,'keep.txt'),'user-owned');
+  // Exercise a shareable URL against a real local bare repository without network credentials.
+  const alias='https://example.invalid/codexmate-test.git',keys=['GIT_CONFIG_COUNT','GIT_CONFIG_KEY_0','GIT_CONFIG_VALUE_0'],prior=keys.map(k=>process.env[k]);
+  process.env.GIT_CONFIG_COUNT='1';process.env.GIT_CONFIG_KEY_0=`url.${remote.replaceAll('\\','/')}.insteadOf`;process.env.GIT_CONFIG_VALUE_0=alias;
+  await git(aPath,['remote','set-url','origin',alias]);
   const sa=new ChatService(new ChatStore(join(relay.home,'client-a')),new FakeCodex() as unknown as AppServer),sb=new ChatService(new ChatStore(join(relay.home,'client-b')),new FakeCodex() as unknown as AppServer);
   try{
-    await sa.configure(aPath,[[process.execPath,'-e','process.exit(0)']]);await sb.configure(bPath,[[process.execPath,'-e','process.exit(0)']]);const {invite}=await sa.pair(relay.url);await sb.pair(relay.url,invite);await until(()=>!!sa.snapshot().room?.peer&&!!sb.snapshot().room?.peer);sa.grant();sb.grant();
+    await sa.configure(aPath,[]);const {invite}=await sa.pair(relay.url);await sb.pair(relay.url,invite);await until(()=>!!sa.snapshot().room?.peer&&!!sb.snapshot().room?.peerWorkspace?.remote);sa.grant();
+    await assert.rejects(sa.start('not ready'),/同伴尚未就绪/);
+    const prepared=await sb.configure(bPath,[],true);assert.equal(prepared.path,join(bPath,'codexmate-project'));assert.equal(await readFile(join(bPath,'keep.txt'),'utf8'),'user-owned');
+    await until(()=>!!sa.snapshot().room?.peerWorkspace?.ready&&!!sb.snapshot().room?.peerWorkspace?.ready);
     const id=await sa.start('实现两个文件共同使用 interface:v1');
     try{await until(()=>sa.db.task(id).phase==='complete'&&sb.db.task(id).phase==='complete',120000);}catch(e){throw new Error(JSON.stringify({a:sa.snapshot(),b:sb.snapshot()},null,2));}
     const task=sa.db.task(id);assert.equal(Object.keys(task.results).length,2);assert.ok(task.integration);assert.equal(await readFile(join(task.path,'a.txt'),'utf8'),'interface:v1');assert.equal(await readFile(join(task.path,'b.txt'),'utf8'),'uses interface:v1');assert.equal(await git(aPath,['status','--porcelain']),'');assert.equal(await git(aPath,['branch','--show-current']),'main');assert.equal(task.reviewedSha,task.integration.sha);
@@ -88,7 +95,14 @@ test('two isolated clients exchange actionable messages, commit and integrate re
     assert.ok(prompts.some(p=>p.includes('同伴上下文')),'同伴上下文没有进入本机 Codex 的提示词');
     assert.equal(prompts.filter(p=>p.includes('同伴上下文')).length,new Set(prompts.filter(p=>p.includes('同伴上下文'))).size,'同一份上下文不得被重复注入');
     const starts=(sa.server as unknown as FakeCodex).starts;sa.close();assert.ok(starts>=3);
-  }finally{sa.close();sb.close();await sleep(100);sa.db.close();sb.db.close();await relay.close();}
+    const empty=join(relay.home,'empty');const blank=await prepareRepository(empty,alias);assert.equal(blank.path,empty);assert.equal(await git(empty,['rev-parse','HEAD']),await git(seed,['rev-parse','HEAD']));
+    await assert.rejects(prepareRepository(empty,'https://example.invalid/different.git'),/其他仓库/);
+  }finally{sa.close();sb.close();await sleep(100);sa.db.close();sb.db.close();await relay.close();keys.forEach((key,i)=>{if(prior[i]===undefined)delete process.env[key];else process.env[key]=prior[i];});}
+});
+
+test('shared clone sources reject local paths, remote helpers and embedded credentials',()=>{
+  for(const value of ['file:///etc/repo','C:/private/repo','/tmp/repo','ext::sh payload','https://token@example.com/repo','ssh://git:password@example.com/repo','--upload-pack=bad'])assert.throws(()=>shareableRemote(value));
+  assert.equal(shareableRemote('git@example.com:team/project.git'),'git@example.com:team/project.git');assert.equal(shareableRemote('https://example.com/team/project.git'),'https://example.com/team/project.git');
 });
 
 test('context export keeps useful kinds, redacts secrets and merges repeated file state',()=>{

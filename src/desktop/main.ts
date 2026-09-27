@@ -29,7 +29,7 @@ else void app.whenReady().then(async()=>{
     return win;
   };
   const safeSender=(event:Electron.IpcMainInvokeEvent)=>{if(!event.senderFrame||new URL(event.senderFrame.url).origin!==backend!.url)throw new Error('Invalid sender');};
-  ipcMain.handle('choose-repository',async event=>{safeSender(event);const result=await dialog.showOpenDialog({title:'选择共享 Git 仓库',properties:['openDirectory']});return result.canceled?null:result.filePaths[0];});
+  ipcMain.handle('choose-repository',async event=>{safeSender(event);const result=await dialog.showOpenDialog({title:'选择本地工作目录',properties:['openDirectory','createDirectory']});return result.canceled?null:result.filePaths[0];});
   ipcMain.handle('open-external',async(event,url:string)=>{safeSender(event);if(!safeExternal(url))throw new Error('不允许打开此地址');await shell.openExternal(url);});
   open();app.on('activate',()=>{if(!BrowserWindow.getAllWindows().length)open();});app.on('second-instance',()=>{const w=BrowserWindow.getAllWindows()[0];w?.show();w?.focus();});
   app.on('window-all-closed',()=>{if(process.platform!=='darwin')app.quit();});

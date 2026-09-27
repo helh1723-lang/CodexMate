@@ -18,7 +18,7 @@ process.env.CODEXMATE_HOME=join(tmpdir(),'codexmate-regression-test-host-'+proce
 
 class Stub extends EventEmitter{
   calls:{method:string;params:any}[]=[];responses:any[]=[];
-  async start(){} async request(method:string,params:any){this.calls.push({method,params});return {thread:{id:'thread'},turn:{id:'turn'},data:[]};}
+  async start(){} async request(method:string,params:any):Promise<any>{this.calls.push({method,params});return {thread:{id:'thread'},turn:{id:'turn'},data:[]};}
   respond(id:any,value:any){this.responses.push({id,value});}reject(id:any,value:any){this.responses.push({id,error:value});}close(){}
 }
 async function fixture(){const home=await mkdtemp(join(tmpdir(),'cm-regression-')),db=new ChatStore(home),server=new Stub(),service=new ChatService(db,server as unknown as AppServer);const room:Room={url:'http://127.0.0.1:1',id:randomUUID(),member:randomUUID(),peer:randomUUID(),token:'test',online:true};db.put('settings','room',room);db.put('settings','project',{path:home,remote:'local.git',checks:[],name:'test',grant:{room:room.id,peer:room.peer}});const task:Task={id:randomUUID(),goal:'test',title:'test',created:Date.now(),base:'a'.repeat(40),initiator:room.peer!,path:home,branch:'cm/test',phase:'working',admission:'accepted',wakes:0,budget:20,repairs:0,results:{},thread:'thread'};db.save(task);return {home,db,server,service,room,task,close(){service.close();db.close();}};}
@@ -119,6 +119,7 @@ test('simultaneous starts create one relay task and never run the rejected candi
     const aRoot=join(home,'repo-a'),bRoot=join(home,'repo-b');await mkdir(aRoot);await mkdir(bRoot);const remote='https://example.invalid/team/project.git';
     for(const [db,root] of [[aDb,aRoot],[bDb,bRoot]] as const){const room=db.get<Room>('settings','room')!;db.put('settings','project',{path:root,remote,name:'project',checks:[],grant:{room:room.id,peer:room.peer!}});}
     const adapter=(root:string)=>(service:ChatService)=>{(service as any).repo=()=>({base:async()=> 'a'.repeat(40),worktree:async(task:string,member:string,_base:string,kind='work')=>{const path=join(root,task);await mkdir(path,{recursive:true});return {path,branch:`cm/${task}/${member.slice(0,8)}-${kind}`};}});};adapter(aRoot)(a);adapter(bRoot)(b);
+    a.changed();b.changed();await until(()=>!!a.snapshot().room?.peerWorkspace?.ready&&!!b.snapshot().room?.peerWorkspace?.ready);
     const starts=await Promise.allSettled([a.start('同时发起 A'),b.start('同时发起 B')]);assert.equal(starts.filter(r=>r.status==='fulfilled').length,1);
     await until(()=>aDb.list<Task>('task').some(t=>t.admission==='accepted')&&bDb.list<Task>('task').some(t=>t.admission==='accepted')&&aServer.calls.some(c=>c.method==='turn/start')&&bServer.calls.some(c=>c.method==='turn/start'));
     const activeA=aDb.list<Task>('task').filter(t=>t.admission==='accepted'&&!['complete','cancelled'].includes(t.phase));
@@ -132,3 +133,69 @@ test('a peer paused mid-review gets a resumable wake, while the initiator waits 
   f.db.put('settings','room',{...f.room,online:false});f.task.phase='paused';f.task.resumePhase='reviewing';f.db.save(f.task);await f.service.resume(f.task.id);assert.equal(f.db.list('wake').length,1);assert.equal(f.db.task(f.task.id).phase,'reviewing');
 }finally{f.close();}});
 test('oversized websocket frames close only the client, not the relay process',async()=>{const home=await mkdtemp(join(tmpdir(),'cm-frame-')),relay=createRelay(home);await new Promise<void>(r=>relay.http.listen(0,'127.0.0.1',r));const port=(relay.http.address() as any).port;try{const ws=new WebSocket(`ws://127.0.0.1:${port}`);ws.on('error',()=>{});await new Promise<void>(r=>ws.on('open',r));const closed=new Promise<void>(r=>ws.on('close',()=>r()));ws.send('x'.repeat(129*1024));await closed;assert.equal((await fetch(`http://127.0.0.1:${port}/health`)).status,200);}finally{await relay.close();}});
+
+test('interrupt and immediate follow-up reuse the original task, thread and worktree',async()=>{const f=await fixture();try{
+  f.task.turn='old-turn';f.db.save(f.task);await f.service.interrupt(f.task.id);
+  assert.equal(f.db.task(f.task.id).phase,'paused');assert.equal(f.db.get('cancel',f.task.id),undefined);
+  await f.service.supplement(f.task.id,'按新的要求继续');assert.equal(f.server.calls.some(c=>c.method==='turn/start'),false);
+  await (f.service as any).notification({method:'turn/completed',params:{threadId:'thread',turn:{id:'old-turn',status:'interrupted'}}});
+  await until(()=>f.server.calls.some(c=>c.method==='turn/start'));
+  assert.equal(f.db.list('task').length,1);assert.equal(f.db.task(f.task.id).path,f.task.path);assert.equal(f.db.task(f.task.id).thread,'thread');
+  assert.equal(f.server.calls.some(c=>c.method==='thread/start'),false);assert.match(f.server.calls.find(c=>c.method==='turn/start')!.params.input[0].text,/按新的要求继续/);
+  assert.ok(f.db.list<Wire>('outbox').some(e=>e.type==='pause'));assert.ok(!f.db.list<Wire>('outbox').some(e=>e.type==='cancel'));
+}finally{f.close();}});
+
+test('interrupt during thread creation retains the returned thread without dispatching work',async()=>{const f=await fixture();let release!:()=>void,entered!:()=>void;const gate=new Promise<void>(r=>release=r),started=new Promise<void>(r=>entered=r);try{
+  f.task.thread=undefined;f.db.save(f.task);f.db.put('wake','work',{id:'work',task:f.task.id,text:'start'});
+  f.server.request=async(method,params)=>{f.server.calls.push({method,params});if(method==='thread/start'){entered();await gate;}return {thread:{id:'created-thread'},turn:{id:'turn'},data:[]};};
+  const work=(f.service as any).pump(f.task.id);await started;await f.service.interrupt(f.task.id,false);release();await work;
+  assert.equal(f.db.task(f.task.id).thread,'created-thread');assert.equal(f.db.task(f.task.id).phase,'paused');assert.ok(!f.server.calls.some(c=>c.method==='turn/start'));
+  await f.service.supplement(f.task.id,'继续');await until(()=>f.server.calls.some(c=>c.method==='turn/start'));assert.equal(f.server.calls.filter(c=>c.method==='thread/start').length,1);
+}finally{release?.();f.close();}});
+
+test('peer pause, supplement and queued messages resume through the drain on the same task',async()=>{const f=await fixture();try{
+  const wire=(type:Wire['type'],payload={})=>({id:randomUUID(),task:f.task.id,room:f.room.id,sender:f.room.peer!,type,payload,at:Date.now()});
+  const pause=wire('pause');f.db.put('inbox',pause.id,pause);await (f.service as any).drain();assert.equal(f.db.task(f.task.id).phase,'paused');
+  const message=wire('message',{text:'分工保留'}),supplement=wire('supplement',{text:'现在继续'});f.db.put('inbox',message.id,message);f.db.put('inbox',supplement.id,supplement);
+  await (f.service as any).drain();await until(()=>f.server.calls.some(c=>c.method==='turn/start'));
+  await until(()=>f.db.list('inbox').length===0);assert.equal(f.db.task(f.task.id).thread,'thread');assert.ok(f.db.get('handled',message.id));
+}finally{f.close();}});
+
+test('model catalog pagination, capability validation and next-turn overrides',async()=>{const f=await fixture();try{
+  const original=f.server.request.bind(f.server);const option=(model:string,efforts:string[])=>({id:model,model,displayName:model,description:'',isDefault:model==='first',defaultReasoningEffort:efforts[0],supportedReasoningEfforts:efforts.map(reasoningEffort=>({reasoningEffort,description:''}))});
+  f.server.request=async(method,p)=>method==='model/list'?p.cursor?{data:[option('second',['low','high'])],nextCursor:null}:{data:[option('first',['medium'])],nextCursor:'next'}:original(method,p);
+  assert.equal((await f.service.models()).length,2);await assert.rejects(f.service.selectModel({model:'first',effort:'high'}),/不支持/);
+  await f.service.selectModel({model:'second',effort:'high'});await f.service.supplement(f.task.id,'继续');await until(()=>f.server.calls.some(c=>c.method==='turn/start'));
+  const turn=f.server.calls.find(c=>c.method==='turn/start')!;assert.equal(turn.params.model,'second');assert.equal(turn.params.effort,'high');assert.equal(turn.params.threadId,'thread');
+  assert.deepEqual(f.service.snapshot().modelSelection,{model:'second',effort:'high'});
+}finally{f.close();}});
+
+test('inbound start waits for workspace authorization then drains without resend',async()=>{const f=await fixture();try{
+  const project=f.db.get<any>('settings','project');f.db.remove('settings','project');f.db.remove('task',f.task.id);
+  const e:Wire={id:randomUUID(),room:f.room.id,sender:f.room.peer!,task:randomUUID(),type:'start',payload:{goal:'收到后处理',base:'a'.repeat(40),remote:'local'},at:Date.now()};
+  f.db.put('inbox',e.id,e);await (f.service as any).drain();assert.equal(f.server.calls.length,0);assert.ok(f.db.get('inbox',e.id));
+  f.db.put('settings','project',{...project,grant:undefined});(f.service as any).repo=()=>({worktree:async()=>({path:f.home,branch:'cm/queued'})});
+  f.service.grant();await until(()=>f.server.calls.some(c=>c.method==='turn/start'));
+  assert.equal(f.db.get('inbox',e.id),undefined);assert.equal(f.db.task(e.task).admission,'accepted');
+}finally{f.close();}});
+
+test('interrupt while turn/start is pending interrupts the returned turn and never cancels the task',async()=>{const f=await fixture();let release!:()=>void,entered!:()=>void;const gate=new Promise<void>(r=>release=r),started=new Promise<void>(r=>entered=r);try{
+  f.db.put('wake','work',{id:'work',task:f.task.id,text:'start'});f.server.request=async(method,params)=>{f.server.calls.push({method,params});if(method==='turn/start'){entered();await gate;}return {thread:{id:'thread'},turn:{id:'late-turn'}};};
+  const work=(f.service as any).pump(f.task.id);await started;await f.service.interrupt(f.task.id,false);release();await work;
+  assert.equal(f.db.task(f.task.id).phase,'paused');assert.ok(f.server.calls.some(c=>c.method==='turn/interrupt'&&c.params.turnId==='late-turn'));assert.equal(f.db.get('cancel',f.task.id),undefined);
+}finally{release?.();f.close();}});
+
+test('interrupt prevents an in-flight context export from sending a late peer message',async()=>{const f=await fixture();let release!:()=>void,entered!:()=>void;const gate=new Promise<void>(r=>release=r),started=new Promise<void>(r=>entered=r);try{
+  (f.service as any).buildContext=async()=>{entered();await gate;return undefined;};
+  const request=(f.service as any).request({id:77,method:'item/tool/call',params:{threadId:'thread',tool:'peer_send',arguments:{message:'不应发出的旧轮次消息'}}});
+  await started;await f.service.interrupt(f.task.id,false);release();await request;
+  assert.equal(f.db.list('outbox').length,0);assert.equal(f.server.responses.find(r=>r.id===77)?.value.success,false);
+}finally{release?.();f.close();}});
+
+test('interrupt during integration preserves the prepared worktree without resurrecting execution',async()=>{const f=await fixture();let release!:()=>void,entered!:()=>void;const gate=new Promise<void>(r=>release=r),started=new Promise<void>(r=>entered=r);try{
+  f.task.initiator=f.room.member;f.task.results={[f.room.member]:{sha:'b'.repeat(40),branch:'cm/a',summary:'a',checks:[]},[f.room.peer!]:{sha:'c'.repeat(40),branch:'cm/b',summary:'b',checks:[]}};f.db.save(f.task);
+  (f.service as any).repo=()=>({integrate:async()=>{entered();await gate;return {path:join(f.home,'integration'),branch:'cm/integration'};}});
+  const work=(f.service as any).pump(f.task.id);await started;await f.service.interrupt(f.task.id,false);release();await work;
+  assert.equal(f.db.task(f.task.id).phase,'paused');assert.equal(f.db.task(f.task.id).branch,'cm/integration');assert.equal(f.server.calls.some(c=>c.method==='turn/start'),false);
+  await f.service.resume(f.task.id,false);await until(()=>f.server.calls.some(c=>c.method==='turn/start'));assert.equal(f.server.calls.find(c=>c.method==='thread/start')!.params.cwd,join(f.home,'integration'));
+}finally{release?.();f.close();}});

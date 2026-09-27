@@ -1,14 +1,52 @@
-import { mkdir, realpath } from 'node:fs/promises';
-import { join } from 'node:path';
+import { mkdir, realpath, readdir, lstat } from 'node:fs/promises';
+import { join, resolve } from 'node:path';
 import { git, GitWorktree, hostGitEnvironment } from '../adapters/git.js';
 import { exec } from '../adapters/process.js';
 import { redact } from '../core/security.js';
 import type { Check, Project, Result, Task } from './model.js';
 export const shaPattern=/^[0-9a-f]{40,64}$/;
 export function repositoryIdentity(remote:string){return remote.replace(/^git@([^:]+):/,'https://$1/').replace(/^ssh:\/\/git@/,'https://').replace(/\.git$/,'').replace(/\/$/,'');}
+/** Peer input must never become a local path, Git helper, option or credential. */
+export function shareableRemote(remote:string){
+  if(/^git@[\w.-]+:[\w./-]+$/.test(remote)&&!remote.includes('..'))return remote;
+  const url=new URL(remote);
+  if(!['https:','ssh:'].includes(url.protocol)||url.password||url.search||url.hash||(url.protocol==='https:'&&url.username)||!url.hostname)throw new Error('共享仓库仅支持无明文凭据的 HTTPS 或 SSH 地址');
+  return remote;
+}
+export async function prepareRepository(directory:string,remote?:string){
+  const selected=resolve(directory);await mkdir(selected,{recursive:true});
+  let root:string|undefined;
+  try{root=await git(selected,['rev-parse','--show-toplevel']);}catch{}
+  if(root){
+    if(await realpath(root)!==await realpath(selected))throw new Error('请选择仓库根目录，不能选择仓库内部子目录');
+    let origin:string|undefined;try{origin=await git(root,['config','--get','remote.origin.url']);}catch{}
+    if(!origin)throw new Error('此目录已有 Git 历史但没有 origin。请选择空目录自动克隆，避免改写现有项目');
+    if(/https?:\/\/[^/]*@/.test(origin))throw new Error('请移除 Git remote 中的明文凭据，使用 Git 凭据管理器');
+    if(remote&&repositoryIdentity(origin)!==repositoryIdentity(remote))throw new Error('所选目录属于其他仓库，请选择空目录；现有文件未修改');
+  }else{
+    if(!remote)throw new Error('请先加入房间以获取发起方仓库，再选择工作目录；发起方需先选择已配置 origin 的项目');
+    shareableRemote(remote);
+    // Never merge a clone into user files. A non-empty folder gets a dedicated child.
+    root=(await readdir(selected)).length?join(selected,'codexmate-project'):selected;
+    if(root!==selected){try{if((await lstat(root)).isSymbolicLink())throw new Error('codexmate-project 不能是符号链接，请选择其他目录');}catch(e:any){if(e.code!=='ENOENT')throw e;}}
+    await mkdir(root,{recursive:true});
+    if((await readdir(root)).length){
+      const existing=await git(root,['config','--get','remote.origin.url']);
+      if(repositoryIdentity(existing)!==repositoryIdentity(remote))throw new Error('codexmate-project 已存在且仓库不匹配，请选择其他目录');
+    }else await git(selected,['clone','--',remote,root]);
+  }
+  await git(root,['fetch','origin']);
+  await git(root,['rev-parse','HEAD']);
+  // Scoped to this repository, never change the user's global Git identity.
+  for(const [key,fallback] of [['user.name','CodexMate'],['user.email','codexmate@localhost']]){
+    try{if(await git(root,['config','--get',key]))continue;}catch{}
+    await git(root,['config','--local',key,fallback]);
+  }
+  return {path:root,remote:await git(root,['config','--get','remote.origin.url'])};
+}
 export class Repository {
   constructor(public project:Project,private home:string){}
-  async verify(){const root=await git(this.project.path,['rev-parse','--show-toplevel']),[canonicalRoot,canonicalProject]=await Promise.all([realpath(root),realpath(this.project.path)]);const samePath=process.platform==='win32'?canonicalRoot.toLowerCase()===canonicalProject.toLowerCase():canonicalRoot===canonicalProject;if(!samePath)throw new Error('请选择仓库根目录');const remote=await git(this.project.path,['remote','get-url','origin']);if(remote!==this.project.remote)throw new Error('仓库 origin 已改变，需要重新授权');}
+  async verify(){const root=await git(this.project.path,['rev-parse','--show-toplevel']),[canonicalRoot,canonicalProject]=await Promise.all([realpath(root),realpath(this.project.path)]);const samePath=process.platform==='win32'?canonicalRoot.toLowerCase()===canonicalProject.toLowerCase():canonicalRoot===canonicalProject;if(!samePath)throw new Error('请选择仓库根目录');const remote=await git(this.project.path,['config','--get','remote.origin.url']);if(remote!==this.project.remote)throw new Error('仓库 origin 已改变，需要重新授权');}
   async base(){await this.verify();await git(this.project.path,['fetch','origin']);const head=await git(this.project.path,['rev-parse','HEAD']);const refs=await git(this.project.path,['branch','-r','--contains',head]);if(!refs.trim())throw new Error('当前 HEAD 尚未同步到 origin，请先推送项目基准提交');return head;}
   async worktree(task:string,member:string,base:string,kind='work'){
     await this.verify();if(!shaPattern.test(base))throw new Error('基准提交格式错误');
